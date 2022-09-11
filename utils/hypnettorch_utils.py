@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import gc
-from IPython.display import clear_output
 import time
 import wandb
 from hypnettorch.data import FashionMNISTData, MNISTData
@@ -20,8 +19,6 @@ from utils.visualization import show_imgs, get_model_dot
 from utils.others import measure_alloc_mem, count_parameters
 from utils.timing import func_timer
 from utils.metrics import get_accuracy, calc_accuracy
-
-from IPython.display import clear_output
 
 torch.set_printoptions(precision=3, linewidth=180)
 
@@ -70,7 +67,7 @@ def calc_delta_theta(hnet, lr, detach=False):
     return ret
 
 
-def get_reg_loss_for_cond(hnet, hnet_prev_params, lr, reg_cond_id, detach_d_theta=False):
+def get_reg_loss_for_cond(hnet, hnet_prev_params, lr, reg_cond_id, detach_d_theta=True):
     # prepare targets (theta for child nets predicted by previous hnet)
     hnet_mode = hnet.training
     hnet.eval()
@@ -93,13 +90,14 @@ def get_reg_loss_for_cond(hnet, hnet_prev_params, lr, reg_cond_id, detach_d_thet
     return (theta_child_target - theta_child_predicted).pow(2).sum()
 
 
-def get_reg_loss(hnet, hnet_prev_params, curr_cond_id, lr=1e-3, clip_grads_max_norm=1., detach_d_theta=False):
-    reg_loss = 0
-    for c_i in range(hnet._num_cond_embs):
-        if curr_cond_id is not None and c_i == curr_cond_id:
+def get_reg_loss(hnet, hnet_prev_params, curr_cond_id, reg_only_until_curr_cond_id=True, lr=1e-3, detach_d_theta=False):
+    reg_loss = 0.
+    num_regs = curr_cond_id if reg_only_until_curr_cond_id is True else hnet._num_cond_embs
+    for cond_i in range(num_regs):
+        if curr_cond_id == cond_i:
             continue
-        reg_loss += get_reg_loss_for_cond(hnet, hnet_prev_params, lr, c_i, detach_d_theta)
-    return reg_loss / (hnet._num_cond_embs - (curr_cond_id is not None))
+        reg_loss += get_reg_loss_for_cond(hnet, hnet_prev_params, lr, cond_i, detach_d_theta)
+    return reg_loss / max(1, num_regs)
 
 
 def infer(X, scenario, hnet_parent_cond_id, hnet_child_cond_id, hnet_parent, hnet_child, solver_parent, solver_child, config):
@@ -171,7 +169,12 @@ def print_metrics(datasets : dict, config, hnet_root, hnet_child, solver_root, s
 def print_stats(stats):
     for c_i, lh in enumerate(stats):
         print(f"{c_i if c_i != 0 else f'{c_i} (root)'}:")
-        print('\n'.join([f'{k:>30}\t{f"{v.item():.4f}" if v.numel() == 1 else v.tolist()}' for k,v in dict(sorted(lh.items())).items()]))
+        for name, losses in dict(sorted(lh.items())).items():
+            if type(losses) in (list, tuple) and len(losses) > 0 and type(losses[0]) in (float, int):
+                print(f"{name:>35} \t {[round(n, 3) for n in losses]}")
+            else:
+                print(f"{name:>35} \t {losses}")
+        # print('\n'.join([f'{k:>30}\t{[round(n, 3) for n in v]}']) for k,v in dict(sorted(lh.items())).items()]))
 
 
 def clip_grads(models, reg_clip_grads_max_norm, reg_clip_grads_max_value):
@@ -182,59 +185,6 @@ def clip_grads(models, reg_clip_grads_max_norm, reg_clip_grads_max_value):
             torch.nn.utils.clip_grad_norm_(m.parameters(), reg_clip_grads_max_norm)
         elif reg_clip_grads_max_value is not None:
             torch.nn.utils.clip_grad_value_(m.parameters(), reg_clip_grads_max_value)
-
-
-def take_training_step(X, y, parent, child, phase, hnet_parent_prev_params, config, loss_fn=F.cross_entropy):
-    """
-    parent and child structure: tuple (hnet, solver, hnet_optimizer, hnet_cond_id)
-        child can be None if phase is "hnet->solver"
-    """
-    hnet_parent, solver_parent, hnet_parent_optim, hnet_parent_cond_id = parent
-    hnet_child, solver_child, hnet_child_optim, hnet_child_cond_id = child
-    for m in (hnet_parent, solver_parent, hnet_child, solver_child):
-        if m is not None:
-            m.train(mode=True)
-    
-    hnet_parent_optim.zero_grad()
-    if hnet_child_optim is not None:
-        hnet_child_optim.zero_grad()
-    hnet_parent_optim.zero_grad()
-    if hnet_child_optim is not None:
-        hnet_child_optim.zero_grad()
-
-    # generate theta and predict
-    y_hat, params_solver = infer(X, phase, hnet_parent_cond_id=hnet_parent_cond_id, hnet_child_cond_id=hnet_child_cond_id,
-        hnet_parent=hnet_parent, hnet_child=hnet_child, solver_parent=solver_parent, solver_child=solver_child, config=config)
-    
-    # task loss
-    loss_class = loss_fn(y_hat, y)
-    loss = loss_class
-    # solvers' params regularization
-    loss_solver_params_reg = torch.tensor(0., device=config["device"])
-    if config["hnet"]["reg_alpha"] is not None and config["hnet"]["reg_alpha"] > 0.:
-        loss_solver_params_reg = config["hnet"]["reg_alpha"] * sum([p.norm(p=2) for p in params_solver]) / len(params_solver)
-    loss += loss_solver_params_reg
-    perform_forgetting_reg = config["hnet"]["reg_beta"] is not None and config["hnet"]["reg_beta"] > 0.
-    loss.backward(retain_graph=perform_forgetting_reg, create_graph=not config["hnet"]["detach_d_theta"])
-    # gradient clipping
-    clip_grads([m for m in (hnet_parent, hnet_child) if m is not None], config["hnet"]["reg_clip_grads_max_norm"], config["hnet"]["reg_clip_grads_max_value"])
-    
-    # regularization against forgetting other contexts
-    loss_reg = torch.tensor(0., device=config["device"])
-    if config["hnet"]["reg_beta"] is not None and config["hnet"]["reg_beta"] > 0.:
-        loss_reg = config["hnet"]["reg_beta"] * get_reg_loss(hnet_parent, hnet_parent_prev_params, curr_cond_id=hnet_parent_cond_id, lr=config["hnet"]["reg_lr"], detach_d_theta=config["hnet"]["detach_d_theta"])
-        loss_reg.backward()
-        # gradient clipping
-        clip_grads([m for m in (hnet_parent, hnet_child) if m is not None], config["hnet"]["reg_clip_grads_max_norm"], config["hnet"]["reg_clip_grads_max_value"])
-    
-    hnet_parent_optim.step()
-    if hnet_child_optim is not None:
-        hnet_child_optim.step()
-    hnet_parent_optim.zero_grad()
-    if hnet_child_optim is not None:
-        hnet_child_optim.zero_grad()
-
-    return loss_class.detach().clone(), loss_solver_params_reg.detach().clone(), loss_reg.detach().clone(), y_hat.var(dim=0).detach().clone()
 
 
 def init_hnet_unconditionals(hnet, uncond_theta):
@@ -300,6 +250,59 @@ def validate_cells_training_inputs(X, y, cells, config):
     return None
 
 
+def take_training_step(X, y, parent, child, phase, hnet_parent_prev_params, config, loss_fn=F.cross_entropy):
+    """
+    parent and child structure: tuple (hnet, solver, hnet_optimizer, hnet_cond_id)
+        child can be None if phase is "hnet->solver"
+    """
+    hnet_parent, solver_parent, hnet_parent_optim, hnet_parent_cond_id = parent
+    hnet_child, solver_child, hnet_child_optim, hnet_child_cond_id = child
+    for m in (hnet_parent, solver_parent, hnet_child, solver_child):
+        if m is not None:
+            m.train(mode=True)
+    
+    hnet_parent_optim.zero_grad()
+    if hnet_child_optim is not None:
+        hnet_child_optim.zero_grad()
+    hnet_parent_optim.zero_grad()
+    if hnet_child_optim is not None:
+        hnet_child_optim.zero_grad()
+
+    # generate theta and predict
+    y_hat, params_solver = infer(X, phase, hnet_parent_cond_id=hnet_parent_cond_id, hnet_child_cond_id=hnet_child_cond_id,
+        hnet_parent=hnet_parent, hnet_child=hnet_child, solver_parent=solver_parent, solver_child=solver_child, config=config)
+    
+    # task loss
+    loss_class = loss_fn(y_hat, y)
+    loss = loss_class
+    # solvers' params regularization
+    loss_solver_params_reg = torch.tensor(0., device=config["device"])
+    if config["hnet"]["reg_alpha"] is not None and config["hnet"]["reg_alpha"] > 0.:
+        loss_solver_params_reg = config["hnet"]["reg_alpha"] * sum([p.norm(p=2) for p in params_solver]) / len(params_solver)
+    loss += loss_solver_params_reg
+    perform_forgetting_reg = config["hnet"]["reg_beta"] is not None and config["hnet"]["reg_beta"] > 0.
+    loss.backward(retain_graph=perform_forgetting_reg, create_graph=not config["hnet"]["detach_d_theta"])
+    # gradient clipping
+    clip_grads([m for m in (hnet_parent, hnet_child) if m is not None], config["hnet"]["reg_clip_grads_max_norm"], config["hnet"]["reg_clip_grads_max_value"])
+    
+    # regularization against forgetting other contexts
+    loss_reg = torch.tensor(0., device=config["device"])
+    if config["hnet"]["reg_beta"] is not None and config["hnet"]["reg_beta"] > 0.:
+        loss_reg = config["hnet"]["reg_beta"] * get_reg_loss(hnet_parent, hnet_parent_prev_params, curr_cond_id=hnet_parent_cond_id, lr=config["hnet"]["reg_lr"], detach_d_theta=config["hnet"]["detach_d_theta"])
+        loss_reg.backward()
+        # gradient clipping
+        clip_grads([m for m in (hnet_parent, hnet_child) if m is not None], config["hnet"]["reg_clip_grads_max_norm"], config["hnet"]["reg_clip_grads_max_value"])
+    
+    hnet_parent_optim.step()
+    if hnet_child_optim is not None:
+        hnet_child_optim.step()
+    hnet_parent_optim.zero_grad()
+    if hnet_child_optim is not None:
+        hnet_child_optim.zero_grad()
+
+    return loss_class.detach().clone(), loss_solver_params_reg.detach().clone(), loss_reg.detach().clone(), y_hat.var(dim=0).detach().clone()
+
+
 def train_cells(X, y, cells, config, stats):
     """
     cells: list of dictionaries with the following keys (and corresponding values):
@@ -317,7 +320,7 @@ def train_cells(X, y, cells, config, stats):
         n_training_iters_solver, n_training_iters_hnet = cells.pop(0).values()
 
     # initialize statistics - logging purposes
-    c_stats = {l:torch.tensor(0.) for l in ("loss_hnet_hnet", "loss_hnet_solver_class", "loss_hnet_solver_theta_reg", "loss_hnet_forgetting_reg", "y_hat_var")}
+    c_stats = {l:[] for l in ("loss_hnet_hnet", "loss_hnet_solver_class", "loss_hnet_solver_theta_reg", "loss_hnet_solver_forgetting_reg", "loss_hnet_hnet_forgetting_reg", "y_hat_var")}
     
     # train the hnet -> solver on the given X, y => create theta target for parent hnet
     if n_training_iters_solver is not None and n_training_iters_solver > 0:
@@ -327,10 +330,14 @@ def train_cells(X, y, cells, config, stats):
             hnet_optim = torch.optim.Adam([*hnet.unconditional_params, *hnet.conditional_params], lr=config["hnet"]["lr"])
         for iter_i in range(n_training_iters_solver):
             curr_cell = (hnet, solver, hnet_optim, hnet_to_solver_cond_id)
-            c_stats["loss_hnet_solver_class"], c_stats["loss_hnet_solver_theta_reg"], c_stats["loss_hnet_forgetting_reg"], c_stats["y_hat_var"] = take_training_step(
+            loss_hnet_solver_class, loss_hnet_solver_theta_reg, loss_hnet_forgetting_reg, y_hat_var = take_training_step(
                 X, y, parent=curr_cell, child=(None, None, None, None), phase="hnet->solver",
                 hnet_parent_prev_params=hnet_prev_params, config=config, loss_fn=F.cross_entropy
             )
+            c_stats["loss_hnet_solver_class"].append(loss_hnet_solver_class.item())
+            c_stats["loss_hnet_solver_theta_reg"].append(loss_hnet_solver_theta_reg.item())
+            c_stats["loss_hnet_solver_forgetting_reg"].append(loss_hnet_forgetting_reg.item())
+            c_stats["y_hat_var"].append(y_hat_var.tolist())
         # set the trained theta as the target for parent hnet
         if hnet_init_theta is not None: # is None for the root hnet
             cells[0]["hnet_theta_out_target"] = remove_hnet_uncondtionals(hnet)
@@ -345,13 +352,20 @@ def train_cells(X, y, cells, config, stats):
         perform_forgetting_reg = config["hnet"]["reg_beta"] is not None and config["hnet"]["reg_beta"] > 0.
         
         for iter_i in range(n_training_iters_hnet):
-            theta_target = torch.cat([p.detach().clone().view(-1) for p in hnet_theta_out_target])
+            # theta_target = torch.cat([p.detach().clone().view(-1) for p in hnet_theta_out_target])
             
             theta_hat = hnet(cond_id=hnet_to_hnet_cond_id)
-            theta_hat = torch.cat([p.view(-1) for p in theta_hat])
+            # theta_hat = torch.cat([p.view(-1) for p in theta_hat])
             
-            loss_hnet_hnet = torch.sqrt(F.mse_loss(theta_hat, theta_target))
+            # loss_hnet_hnet = torch.sqrt(F.mse_loss(theta_hat, theta_target))
             # loss_hnet_hnet = (theta_hat - theta_target).pow(2).sum()
+            loss_hnet_hnet = torch.tensor(0., device=config["device"])
+            for theta_l_hat, theta_l_target in zip(theta_hat, hnet_theta_out_target):
+                loss_hnet_hnet = loss_hnet_hnet + torch.sqrt(F.mse_loss(theta_l_hat, theta_l_target.detach().clone()))
+            
+            if torch.isnan(loss_hnet_hnet):
+                print("loss_hnet_hnet is nan")
+            
             loss_hnet_hnet.backward(retain_graph=perform_forgetting_reg, create_graph=not config["hnet"]["detach_d_theta"])
             # gradient clipping
             clip_grads([hnet], config["hnet"]["reg_clip_grads_max_norm"], config["hnet"]["reg_clip_grads_max_value"])
@@ -366,11 +380,11 @@ def train_cells(X, y, cells, config, stats):
 
             hnet_optim.step()
             hnet_optim.zero_grad()
-            c_stats["loss_hnet_hnet"] = loss_hnet_hnet.detach().clone()
+            c_stats["loss_hnet_hnet"].append(loss_hnet_hnet.item())
+            c_stats["loss_hnet_hnet_forgetting_reg"].append(loss_reg.item())
         # set the trained theta as the target for parent hnet
         if hnet_init_theta is not None: # is None for the root hnet
             cells[0]["hnet_theta_out_target"] = remove_hnet_uncondtionals(hnet)
-
 
     # one step deeper (onto the parents of the current cell)
     stats.append(c_stats)

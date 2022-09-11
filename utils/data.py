@@ -3,6 +3,9 @@ import torch
 from torchvision import datasets, transforms
 import numpy as np
 import random
+from hypnettorch.data import FashionMNISTData, MNISTData
+from hypnettorch.data.special.split_mnist import get_split_mnist_handlers
+from hypnettorch.data.special.split_cifar import get_split_cifar_handlers
 
 DATA_PATH = os.getenv("DATA_PATH")
 
@@ -14,6 +17,28 @@ def seed_worker(worker_id):
 
 g = torch.Generator()
 g.manual_seed(0)
+
+
+def get_data_handlers(config):
+    torch.manual_seed(0)
+    np.random.seed(0)
+
+    print(f"[DATA] Loading data handlers for {config['data']['name']}")
+
+    if config["data"]["name"] == "mnist|fmnist":
+        mnist = MNISTData(config["data"]["data_dir"], use_one_hot=True, validation_size=config["data"]["validation_size"])
+        fmnist = FashionMNISTData(config["data"]["data_dir"], use_one_hot=True, validation_size=config["data"]["validation_size"])
+        data_handlers = [mnist, fmnist]
+    elif config["data"]["name"] == "splitmnist":
+        data_handlers = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+    elif config["data"]["name"] in ("splitcifar10", "splitcifar100"):
+        data_handlers = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+    else:
+        raise NotImplementedError(f"Unknown dataset: {config['data']['name']}")
+
+    assert config["data"]["num_tasks"] == len(data_handlers), "Number of tasks does not match number of data handlers"
+    
+    return data_handlers
 
 
 def randomize_targets(X, y, noise=0.1, n_classes=10):

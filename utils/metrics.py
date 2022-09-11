@@ -1,4 +1,18 @@
 import torch
+import numpy as np
+
+
+def print_arch_summary(arch):
+    print("\nSummary of parameters:")
+    max_possible_num_of_maintained_params = 0
+    num_of_maintained_params = 0
+    for name, model in arch:
+        print(f"- {name}:\t{sum(p.numel() for p in model.parameters())}\t({sum([np.prod(p) for p in model.param_shapes])} possible)")
+        num_of_maintained_params += sum(p.numel() for p in model.parameters())
+        max_possible_num_of_maintained_params += sum([np.prod(p) for p in model.param_shapes])
+    print(f"---\nTotal available parameters:\t{max_possible_num_of_maintained_params}")
+    print(f"Parameters maintained:\t\t{num_of_maintained_params}")
+    print(f"-> Coefficient of compression:\t{(num_of_maintained_params / max_possible_num_of_maintained_params):.5f}")
 
 
 def get_accuracy(y_hat, y, perc=True):
