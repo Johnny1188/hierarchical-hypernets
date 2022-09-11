@@ -52,6 +52,7 @@ def main(cli_args=None):
         wandb.watch(root_cell, log="all", log_freq=100)
     
     ### save config and arch_config
+    os.makedirs("logs", exist_ok=True)
     with open(os.path.join("logs", f"config_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.json"), 'w') as f:
         json.dump({"config": config, "arch_config": arch_config}, f)
 
