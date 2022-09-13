@@ -1,6 +1,7 @@
 import os
 import torch
 from torchvision import datasets, transforms
+import torchvision.transforms.functional as TF
 import numpy as np
 import random
 from hypnettorch.data import FashionMNISTData, MNISTData
@@ -19,6 +20,28 @@ g = torch.Generator()
 g.manual_seed(0)
 
 
+class ResizeTransform:
+    def __init__(self, in_shape, output_shape, return_flattened=False):
+        self.output_shape = output_shape # expects [H x W]
+        self.in_shape = in_shape
+        self.return_flattened = return_flattened
+
+    def __call__(self, x, batched=True):
+        # expects x to be a tensor of shape [B, C x H x W]
+        if batched:
+            x = x.view(-1, *self.in_shape)
+            x = x.permute(0, 3, 1, 2)
+        else:
+            x = x.view(*self.in_shape)
+            x = x.permute(2, 0, 1)
+        
+        x = TF.resize(x, self.output_shape)
+        if self.return_flattened:
+            return x.view(-1, np.prod(x.shape[1:]))
+        else:
+            return x
+
+
 def get_data_handlers(config):
     torch.manual_seed(0)
     np.random.seed(0)
@@ -33,6 +56,14 @@ def get_data_handlers(config):
         data_handlers = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
     elif config["data"]["name"] in ("splitcifar10", "splitcifar100"):
         data_handlers = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+    elif config["data"]["name"] == "splitmnist,splitcifar100":
+        splitmnist = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitmnist"]["num_tasks"], num_classes_per_task=config["data"]["splitmnist"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+        splitcifar100 = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitcifar100"]["num_tasks"], num_classes_per_task=config["data"]["splitcifar100"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+        raise NotImplementedError("TODO - different num of channels - grayscale cifar?")
+        for d in splitcifar100: # additional resizing to match mnist
+            d.transform = ResizeTransform(in_shape=(32, 32, 3), out_shape=(28, 28), return_flattened=True)
+
+        data_handlers = [*splitmnist, *splitcifar100]
     else:
         raise NotImplementedError(f"Unknown dataset: {config['data']['name']}")
 

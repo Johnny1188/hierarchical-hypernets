@@ -93,9 +93,6 @@ torch.set_printoptions(precision=3, linewidth=180)
 #             hnet_root_prev_params = [p.detach().clone() for p_idx, p in enumerate(hnet_root.unconditional_params)]
 #             for epoch in range(config["epochs"]):
 #                 for i, (batch_size, X, y) in enumerate(data.train_iterator(config["data"]["batch_size"])):
-#                     if config["max_minibatches_per_epoch"] is not None and i > config["max_minibatches_per_epoch"]:
-#                         break
-
 #                     X = data.input_to_torch_tensor(X, config["device"], mode="train")
 #                     y = data.output_to_torch_tensor(y, config["device"], mode="train")
 
@@ -175,19 +172,19 @@ torch.set_printoptions(precision=3, linewidth=180)
 
 @func_timer
 def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_root_prev_params, wandb_run=None, loss_fn=F.cross_entropy):
-    root_cell.reinit_hnet_theta_optim()
-    root_cell.reinit_task_emb_optims(task_i=task_i)
-    
     task_data = data_handlers[task_i]
     path = paths[path_i]
     
+    root_cell.reinit_hnet_theta_optim()
+    root_cell.reinit_task_emb_optims(path=path, task_i=task_i)
+    # root_cell.reinit_task_emb_optims(path=path, task_i=None)
+    
     for epoch in range(config["epochs"]):
-        for i, (batch_size, X, y) in enumerate(task_data.train_iterator(config["data"]["batch_size"])):
-            if config["max_minibatches_per_epoch"] is not None and i > config["max_minibatches_per_epoch"]:
-                break
-
+        for batch_i, (batch_size, X, y) in enumerate(task_data.train_iterator(config["data"]["batch_size"])):
             X = task_data.input_to_torch_tensor(X, config["device"], mode="train")
             y = task_data.output_to_torch_tensor(y, config["device"], mode="train")
+            if hasattr(task_data, "transform"): # additional transformation
+                X = task_data.transform(X, batched=True)
 
             root_cell.zero_grad() # zero gradients of all cells in this root's tree
 
@@ -201,7 +198,7 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
             loss_theta_solver_reg = solving_cell.config["hnet"]["reg_alpha"] * (sum([p.norm(p=2) for p in theta_solver]) / len(theta_solver))
             
             total_loss = loss_class + loss_theta_solver_reg
-            apply_forgetting_reg = task_i > 0 and root_cell.config["hnet"]["reg_beta"] is not None and root_cell.config["hnet"]["reg_beta"] > 0.
+            apply_forgetting_reg = (task_i > 0 or path_i > 0) and root_cell.config["hnet"]["reg_beta"] is not None and root_cell.config["hnet"]["reg_beta"] > 0.
             total_loss.backward(retain_graph=apply_forgetting_reg, create_graph=not root_cell.config["hnet"]["detach_d_theta"])
 
             # clip gradients of all cells in this root's tree
@@ -221,21 +218,21 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
                 # clip gradients of all cells in this root's tree
                 root_cell.clip_grads()
             
-            root_cell.step(task_i=task_i) # optimize only the current task emb (+ unconditional params)
+            root_cell.step(path=path, task_i=task_i) # optimize only the current task emb (+ unconditional params)
             root_cell.zero_grad()
 
-            if i % 50 == 49:
-                print(f"[P{path_i + 1}/{len(paths)}-{''.join([str(i) for i in path])} | T{task_i + 1}/{len(data_handlers)} | E{epoch + 1}/{config['epochs']} | {i + 1}]")
-                metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=loss_fn)
-                metrics["loss_class"] = loss_class.item()
-                metrics["acc_class"] = (y_hat.argmax(dim=1) == y.argmax(dim=-1)).float().mean().item() * 100.
-                metrics["loss_theta_solver_reg"] = loss_theta_solver_reg.item()
-                metrics["loss_reg"] = loss_reg.item() if apply_forgetting_reg is True else 0.
-                metrics["y_hat_std"] = y_hat.std(dim=0).detach().clone().tolist()
-                print_metrics(metrics)
-                if wandb_run is not None:
-                    log_wandb(metrics, wandb_run)
-                print("---")    
+        print(f"[P{path_i + 1}/{len(paths)}-{''.join([str(i) for i in path])} | T{task_i + 1}/{len(data_handlers)} | E{epoch + 1}/{config['epochs']}]")
+        metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=loss_fn)
+        metrics["loss_class"] = loss_class.item()
+        metrics["acc_class"] = (y_hat.argmax(dim=1) == y.argmax(dim=-1)).float().mean().item() * 100.
+        metrics["loss_theta_solver_reg"] = loss_theta_solver_reg.item()
+        metrics["loss_reg"] = loss_reg.item() if apply_forgetting_reg is True else 0.
+        metrics["y_hat_std"] = y_hat.std(dim=0).detach().clone().tolist()
+        print_metrics(metrics)
+        print("---")
+        if wandb_run is not None:
+            metrics["y_hat_std"] = wandb.Histogram(metrics["y_hat_std"])
+            log_wandb(metrics, wandb_run)
 
 
 @func_timer
@@ -263,6 +260,7 @@ def train(data_handlers, root_cell, config, paths, wandb_run=None, loss_fn=F.cro
                 paths=paths,
                 path_i=p_i,
                 hnet_root_prev_params=hnet_root_prev_params,
+                wandb_run=wandb_run,
                 loss_fn=loss_fn,
             )
 
