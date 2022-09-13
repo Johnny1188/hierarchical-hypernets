@@ -25,39 +25,68 @@ class Cell(nn.Module):
             self.reinit_task_emb_optims()
 
     def reinit_hnet_theta_optim(self):
-        self.hnet_theta_optim = get_optimizer(
-            params=self.hnet.unconditional_params,
-            lr=self.config["hnet"]["lr"],
-            beta_1=self.config["hnet"]["adam_beta_1"],
-            beta_2=self.config["hnet"]["adam_beta_2"],
-            weight_decay=self.config["hnet"]["weight_decay"],
-        )
-        for child in self.children:
-            child.reinit_hnet_theta_optim()
-    
-    def reinit_task_emb_optims(self, task_i=None):
-        if task_i is not None and self.task_emb_optims is not None:
-            ### reinitialize only a single task embedding optimizer
-            self.task_emb_optims[task_i] = get_optimizer(
-                params=[self.hnet.conditional_params[task_i]],
+        ### note: unconditional params include chunk embeddings when they are not conditional (self.hnet.cond_chunk_embs == False)
+        if self.hnet.unconditional_params is not None:
+            self.hnet_theta_optim = get_optimizer(
+                params=self.hnet.unconditional_params,
                 lr=self.config["hnet"]["lr"],
                 beta_1=self.config["hnet"]["adam_beta_1"],
                 beta_2=self.config["hnet"]["adam_beta_2"],
                 weight_decay=self.config["hnet"]["weight_decay"],
             )
         else:
-            ### reinitialize all task embedding optimizers
-            self.task_emb_optims = [
-                get_optimizer(
-                    params=[cond_param],
+            self.hnet_theta_optim = None
+        
+        for child in self.children:
+            child.reinit_hnet_theta_optim()
+    
+    def reinit_task_emb_optims(self, path=None, task_i=None):
+        assert type(path) == list or (task_i is None and path is None), \
+            "path must be a list of integers or task_i and path must be None (all task emb optims are reinitialized)"
+
+        child_idx = None
+        if path is  not None and len(path) > 0:
+            child_idx = path[0]
+
+        if self.hnet.conditional_params is None: # no conditional params
+            self.task_emb_optims = None
+        else:
+            if task_i is not None and self.task_emb_optims is not None:
+                ### reinitialize only a single task/context embedding optimizer
+                cond_id = self.get_cond_id(task_i, child_idx)
+                params = [self.hnet.conditional_params[cond_id]]
+                if self.hnet.cond_chunk_embs is True: # chunk embeddings may also be conditional
+                    params.append(self.hnet.get_chunk_emb(cond_id=cond_id))
+                self.task_emb_optims[cond_id] = get_optimizer(
+                    params=params,
                     lr=self.config["hnet"]["lr"],
                     beta_1=self.config["hnet"]["adam_beta_1"],
                     beta_2=self.config["hnet"]["adam_beta_2"],
                     weight_decay=self.config["hnet"]["weight_decay"],
-                ) for cond_param in self.hnet.conditional_params
-            ]
-        for child in self.children:
-            child.reinit_hnet_theta_optim(task_i=task_i)        
+                )
+            else:
+                ### reinitialize all conditional embedding optimizers
+                params_per_optim = []
+                for cond_id in range(self.hnet.num_known_conds):
+                    params = [self.hnet.conditional_params[cond_id]]
+                    if self.hnet.cond_chunk_embs is True: # chunk embeddings may also be conditional
+                        params.append(self.hnet.get_chunk_emb(cond_id=cond_id))
+                    params_per_optim.append(params)
+                self.task_emb_optims = [
+                    get_optimizer(
+                        params=params_for_cond,
+                        lr=self.config["hnet"]["lr"],
+                        beta_1=self.config["hnet"]["adam_beta_1"],
+                        beta_2=self.config["hnet"]["adam_beta_2"],
+                        weight_decay=self.config["hnet"]["weight_decay"],
+                    ) for params_for_cond in params_per_optim
+                ]
+
+        if path is None:
+            for child in self.children:
+                child.reinit_task_emb_optims(path=None, task_i=None)
+        elif child_idx is not None:
+            self.children[child_idx].reinit_task_emb_optims(path=path[1:], task_i=task_i)
 
     def forward(self, x, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}):
         assert type(path) == list, "path must be a list of integers"
@@ -78,19 +107,25 @@ class Cell(nn.Module):
             path_trace["cond_ids"].append(cond_id)
         else: # hnet -> hnet
             ### generate params (theta) for child cell's hypernet
-            child_idx = path.pop(0)
+            child_idx = path[0]
             cond_id = self.get_cond_id(task_i, child_idx)
             theta_child_hnet = self.hnet.forward(cond_id=cond_id, weights=theta_hnet)
             path_trace["cond_ids"].append(cond_id)
             
             if self.children[child_idx].needs_theta_type == "uncond_weights":
-                theta_child_hnet = {"uncond_weights": theta_child_hnet}
+                theta_child_hnet = {
+                    "uncond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.unconditional_param_shapes)
+                }
             elif self.children[child_idx].needs_theta_type == "cond_weights":
-                theta_child_hnet = {"cond_weights": theta_child_hnet}
+                theta_child_hnet = {
+                    "cond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.conditional_param_shapes)
+                }
+            elif self.children[child_idx].needs_theta_type == "all":
+                theta_child_hnet = Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.param_shapes)
             elif self.children[child_idx].needs_theta_type == "none":
                 theta_child_hnet = None
 
-            y_hat, theta_solver, path_trace = self.children[child_idx].forward(x, task_i=task_i, path=path, theta_hnet=theta_child_hnet)
+            y_hat, theta_solver, path_trace = self.children[child_idx].forward(x, task_i=task_i, path=path[1:], theta_hnet=theta_child_hnet, path_trace=path_trace)
         
         return y_hat, theta_solver, path_trace
 
@@ -117,29 +152,35 @@ class Cell(nn.Module):
             child.toggle_mode(mode=mode)
     
     def zero_grad(self):
-        assert self.hnet_theta_optim is not None and self.task_emb_optims is not None, \
-            "Cell's optimizers not fully initialized"
-
-        self.hnet_theta_optim.zero_grad()
-        for task_emb_optim in self.task_emb_optims:
-            task_emb_optim.zero_grad()
+        if self.hnet_theta_optim is not None:
+            self.hnet_theta_optim.zero_grad()
+        if self.task_emb_optims is not None:
+            for task_emb_optim in self.task_emb_optims: # TODO: step only with the one for the current task
+                task_emb_optim.zero_grad()
 
         for child in self.children:
             child.zero_grad()
     
-    def step(self, task_i=None):
-        assert self.hnet_theta_optim is not None and self.task_emb_optims is not None, \
-            "Cell's optimizers not fully initialized"
+    def step(self, path, task_i=None):
+        assert type(path) == list, "path must be a list of integers"
 
-        self.hnet_theta_optim.step()
-        if task_i is not None: # step only a single task embedding optimizer
-            self.task_emb_optims[task_i].step()
-        else: # step all task embedding optimizers
-            for task_emb_optim in self.task_emb_optims:
-                task_emb_optim.step()
+        child_idx = None
+        if len(path) > 0:
+            child_idx = path[0]
+
+        ### step hnet's unconditional parameters (theta - everything except task embeddings)
+        if self.hnet_theta_optim is not None:
+            self.hnet_theta_optim.step()
+            
+        if self.task_emb_optims is not None:
+            if task_i is not None: # step only a single task embedding optimizer
+                self.task_emb_optims[self.get_cond_id(task_i, child_idx)].step()
+            else: # step with all task embedding optimizers
+                for task_emb_optim in self.task_emb_optims:
+                    task_emb_optim.step()
         
-        for child in self.children:
-            child.step(task_i=task_i)
+        if child_idx is not None:
+            self.children[child_idx].step(path=path[1:], task_i=task_i)
     
     def clip_grads(self):
         if self.config["hnet"]["reg_clip_grads_max_norm"] is not None and self.config["hnet"]["reg_clip_grads_max_value"] is not None:
@@ -194,7 +235,13 @@ class Cell(nn.Module):
     @staticmethod
     def correct_param_shapes(av_params, target_shapes):
         """Correct the shapes of the parameters"""
+        
+        # check if the shapes are already correct
+        if [list(p.shape) for p in av_params] == target_shapes:
+            return av_params
+        
         if type(av_params) in (list, tuple):
+            # flatten available params
             av_params_flattened = []
             for p in av_params:
                 av_params_flattened.append(p.flatten())
