@@ -2,14 +2,31 @@ import torch
 import numpy as np
 
 
-def print_arch_summary(arch):
+def get_params_info(cell, path, num_of_maintained_params, max_possible_num_of_maintained_params):
+    name = "[" + "".join([str(i) for i in path]) + "]"
+    num_maintained_hnet = sum(p.numel() for p in cell.hnet.parameters())
+    num_maintained_solver = sum(p.numel() for p in cell.solver.parameters())
+    # num_maintained = sum(p.numel() for p in cell.parameters())
+    max_maintained_hnet = sum([np.prod(p) for p in cell.hnet.param_shapes])
+    max_maintained_solver = sum([np.prod(p) for p in cell.solver.param_shapes])
+    # max_maintained = sum([np.prod(p) for p in [*cell.hnet.param_shapes, *cell.solver.param_shapes]])
+
+    print(f"- {name} hypernet:\t{num_maintained_hnet}\t({max_maintained_hnet} possible)")
+    print(f"- {name} solver:\t{num_maintained_solver}\t({max_maintained_solver} possible)")
+
+    num_of_maintained_params += num_maintained_hnet + num_maintained_solver
+    max_possible_num_of_maintained_params += max_maintained_hnet + max_maintained_solver
+    
+    for child_idx, child in enumerate(cell.children):
+        maintained, max_params = get_params_info(child, path + [child_idx], num_of_maintained_params, max_possible_num_of_maintained_params)
+        num_of_maintained_params += maintained
+        max_possible_num_of_maintained_params += max_params
+    return num_of_maintained_params, max_possible_num_of_maintained_params
+
+
+def print_arch_summary(root_cell):
     print("\nSummary of parameters:")
-    max_possible_num_of_maintained_params = 0
-    num_of_maintained_params = 0
-    for name, model in arch:
-        print(f"- {name}:\t{sum(p.numel() for p in model.parameters())}\t({sum([np.prod(p) for p in model.param_shapes])} possible)")
-        num_of_maintained_params += sum(p.numel() for p in model.parameters())
-        max_possible_num_of_maintained_params += sum([np.prod(p) for p in model.param_shapes])
+    num_of_maintained_params, max_possible_num_of_maintained_params = get_params_info(root_cell, [], 0, 0)
     print(f"---\nTotal available parameters:\t{max_possible_num_of_maintained_params}")
     print(f"Parameters maintained:\t\t{num_of_maintained_params}")
     print(f"-> Coefficient of compression:\t{(num_of_maintained_params / max_possible_num_of_maintained_params):.5f}")

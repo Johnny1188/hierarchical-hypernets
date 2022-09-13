@@ -1,3 +1,4 @@
+import os
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -6,8 +7,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import time
-
-torch.set_printoptions(precision=3, linewidth=180)
 
 
 def finish_arch_config(cell, root_level=False):
