@@ -22,17 +22,16 @@ def get_arch_config(config):
     return final_arch_config
 
 
-def get_config(cli_args):
+def get_config(cli_args=None):
     config = {
         "epochs": 80,
-        "max_minibatches_per_epoch": None,
         "data": {
             "name": "splitcifar100",
             "in_shape": [32, 32, 3],
             "num_tasks": 6,
             "num_classes_per_task": 10,
             "batch_size": 256,
-            "data_dir": "data_tmp",
+            "data_dir": "data",
             "validation_size": 0,
         },
         "solver": {
@@ -89,14 +88,14 @@ def get_config(cli_args):
             config["wandb_logging"] = True
         if hasattr(cli_args, "epochs") and cli_args.epochs is not None:
             config["epochs"] = cli_args.epochs
+        if hasattr(cli_args, "data") and cli_args.data is not None:
+            config["data"].update(**get_data_specs(cli_args.data))
         if hasattr(cli_args, "solver") and cli_args.solver is not None:
             assert cli_args.solver in ["lenet", "zenkenet", "resnet"], "Unknown solver"
             config["solver"]["use"] = cli_args.solver
-            config["solver"]["specs"].update(get_solver_specs(cli_args.solver))
-        if hasattr(cli_args, "data") and cli_args.data is not None:
-            config["data"].update(**get_data_specs(cli_args.data))
+            config["solver"]["specs"].update(get_solver_specs(cli_args.solver, in_shape=config["data"]["in_shape"], num_outputs=config["data"]["num_classes_per_task"]))
     
     config["solver"]["in_shape"] = config["data"]["in_shape"]
-    config["hnet"]["model"]["num_cond_embs"] = config["data"]["num_tasks"] * 2
+    config["hnet"]["model"]["num_cond_embs"] = config["data"]["num_tasks"]
 
     return config

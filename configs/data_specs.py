@@ -30,3 +30,17 @@ def get_data_specs(data_name):
             "num_tasks": 6,
             "num_classes_per_task": 10,
         }
+    elif data_name == "splitcifar100,splitmnist":
+        raise NotImplemented
+        return {
+            "name": "splitcifar100,splitmnist",
+            "in_shape": [28, 28, 3],
+            "splitmnist": {
+                "num_tasks": 5,
+                "num_classes_per_task": 2,
+            },
+            "splitcifar100": {
+                "num_tasks": 6,
+                "num_classes_per_task": 10,
+            },
+        }
