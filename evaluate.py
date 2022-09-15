@@ -65,7 +65,7 @@ def evaluate(root_cell, data_handlers, config, paths, loss_fn=F.cross_entropy):
     
     with torch.no_grad():
         for p_i, path in enumerate(paths):
-            m_key_p = f"[P{p_i + 1}/{len(paths)}-{''.join([str(i) for i in path])}]"
+            m_key_p = f"[P{p_i + 1}-{''.join([str(i) for i in path])}]"
             metrics[m_key_p] = {}
             for task_i, task_data in enumerate(data_handlers):
                 curr_task_metrics = eval_task(
@@ -78,7 +78,7 @@ def evaluate(root_cell, data_handlers, config, paths, loss_fn=F.cross_entropy):
                 )
                 
                 # add to metrics
-                m_key_t = f"[T{task_i + 1}/{len(data_handlers)}]"
+                m_key_t = f"[T{task_i + 1}]"
                 metrics[m_key_p][m_key_t] = curr_task_metrics
 
     root_cell.toggle_mode(mode="train")

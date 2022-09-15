@@ -171,16 +171,17 @@ torch.set_printoptions(precision=3, linewidth=180)
 
 
 @func_timer
-def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_root_prev_params, wandb_run=None, loss_fn=F.cross_entropy):
+def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_root_prev_params,
+        root_hnet_cond_ids_already_trained, wandb_run=None, loss_fn=F.cross_entropy):
     task_data = data_handlers[task_i]
     path = paths[path_i]
+    root_hnet_cond_ids_now_trained = set()
     
     root_cell.reinit_hnet_theta_optim()
     root_cell.reinit_task_emb_optims(path=path, task_i=task_i)
-    # root_cell.reinit_task_emb_optims(path=path, task_i=None)
     
     for epoch in range(config["epochs"]):
-        for batch_i, (batch_size, X, y) in enumerate(task_data.train_iterator(config["data"]["batch_size"])):
+        for _, X, y in task_data.train_iterator(config["data"]["batch_size"]):
             X = task_data.input_to_torch_tensor(X, config["device"], mode="train")
             y = task_data.output_to_torch_tensor(y, config["device"], mode="train")
             if hasattr(task_data, "transform"): # additional transformation
@@ -189,8 +190,9 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
             root_cell.zero_grad() # zero gradients of all cells in this root's tree
 
             # generate theta and predict
-            y_hat, theta_solver, path_trace = root_cell(X, task_i=task_i, path=path, theta_hnet=None, path_trace={"cond_ids": []})
+            y_hat, theta_solver, path_trace = root_cell(X, task_i=task_i, path=path, theta_hnet=None, path_trace={"cond_ids": []}, save_last_fc_acts=True)
             solving_cell = path_trace["solving_cell"]
+            root_hnet_cond_ids_now_trained.add(path_trace["cond_ids"][0]) # add the root's hnet cond_id
 
             # task loss
             loss_class = loss_fn(y_hat, y)
@@ -209,10 +211,10 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
                 loss_reg = solving_cell.config["hnet"]["reg_beta"] * get_reg_loss(
                     hnet=root_cell.hnet,
                     hnet_prev_params=hnet_root_prev_params,
-                    curr_cond_id=path_trace["cond_ids"][0],
-                    reg_only_until_curr_cond_id=True,
+                    reg_cond_ids=root_hnet_cond_ids_already_trained,
                     lr=root_cell.config["hnet"]["reg_lr"],
-                    detach_d_theta=root_cell.config["hnet"]["detach_d_theta"]
+                    detach_d_theta=root_cell.config["hnet"]["detach_d_theta"],
+                    device=config["device"],
                 )
                 loss_reg.backward()
                 # clip gradients of all cells in this root's tree
@@ -221,18 +223,33 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
             root_cell.step(path=path, task_i=task_i) # optimize only the current task emb (+ unconditional params)
             root_cell.zero_grad()
 
-        print(f"[P{path_i + 1}/{len(paths)}-{''.join([str(i) for i in path])} | T{task_i + 1}/{len(data_handlers)} | E{epoch + 1}/{config['epochs']}]")
+        ### evaluation & logging between epochs
+        # get hidden activations of the solver
+        solver_acts_mean, solver_acts_std = [], []
+        if len(solving_cell.saved_solver_acts) > 0:
+            solver_acts_mean = [layer_acts.mean(dim=0) for layer_acts in solving_cell.saved_solver_acts]
+            solver_acts_std = [layer_acts.std(dim=0) for layer_acts in solving_cell.saved_solver_acts]
+        # evaluate
         metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=loss_fn)
         metrics["loss_class"] = loss_class.item()
         metrics["acc_class"] = (y_hat.argmax(dim=1) == y.argmax(dim=-1)).float().mean().item() * 100.
         metrics["loss_theta_solver_reg"] = loss_theta_solver_reg.item()
         metrics["loss_reg"] = loss_reg.item() if apply_forgetting_reg is True else 0.
         metrics["y_hat_std"] = y_hat.std(dim=0).detach().clone().tolist()
+        # logging
+        print(f"[P{path_i + 1}/{len(paths)}-{''.join([str(i) for i in path])} | T{task_i + 1}/{len(data_handlers)} | E{epoch + 1}/{config['epochs']}]")
         print_metrics(metrics)
-        print("---")
+        print("---")        
         if wandb_run is not None:
             metrics["y_hat_std"] = wandb.Histogram(metrics["y_hat_std"])
+            for l_i, (layer_acts_mean, layer_acts_std) in enumerate(zip(solver_acts_mean, solver_acts_std)):
+                metrics[f"solver_acts_mean_l{l_i}"] = wandb.Histogram(layer_acts_mean.detach().clone().tolist())
+                metrics[f"solver_acts_std_l{l_i}"] = wandb.Histogram(layer_acts_std.detach().clone().tolist())
             log_wandb(metrics, wandb_run)
+
+    ### add the root's hnet cond_ids that were used during this task - used for regularization against forgetting
+    root_hnet_cond_ids_already_trained.update(root_hnet_cond_ids_now_trained)
+    return root_hnet_cond_ids_already_trained
 
 
 @func_timer
@@ -244,15 +261,16 @@ def train(data_handlers, root_cell, config, paths, wandb_run=None, loss_fn=F.cro
     torch.manual_seed(0)
     np.random.seed(0)
     hnet_root_prev_params = None
+    root_hnet_cond_ids_already_trained = set()
     root_cell.toggle_mode(mode="train")
 
     for p_i, path in enumerate(paths):
         # sequential training on tasks
         for task_i in range(len(data_handlers)):
             # save parameters before solving the task for regularization against forgetting
-            hnet_root_prev_params = [p.detach().clone() for p_idx, p in enumerate(root_cell.hnet.unconditional_params)]
+            hnet_root_prev_params = {"uncond_weights": [p.detach().clone() for p_idx, p in enumerate(root_cell.hnet.unconditional_params)]}
             
-            train_task(
+            root_hnet_cond_ids_already_trained = train_task(
                 data_handlers=data_handlers,
                 task_i=task_i,
                 root_cell=root_cell,
@@ -260,6 +278,7 @@ def train(data_handlers, root_cell, config, paths, wandb_run=None, loss_fn=F.cro
                 paths=paths,
                 path_i=p_i,
                 hnet_root_prev_params=hnet_root_prev_params,
+                root_hnet_cond_ids_already_trained=root_hnet_cond_ids_already_trained,
                 wandb_run=wandb_run,
                 loss_fn=loss_fn,
             )

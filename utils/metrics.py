@@ -4,11 +4,11 @@ import numpy as np
 
 def get_params_info(cell, path, num_of_maintained_params, max_possible_num_of_maintained_params):
     name = "[" + "".join([str(i) for i in path]) + "]"
-    num_maintained_hnet = sum(p.numel() for p in cell.hnet.parameters())
-    num_maintained_solver = sum(p.numel() for p in cell.solver.parameters())
+    num_maintained_hnet = cell.hnet.num_internal_params
+    num_maintained_solver = cell.solver.num_internal_params
     # num_maintained = sum(p.numel() for p in cell.parameters())
-    max_maintained_hnet = sum([np.prod(p) for p in cell.hnet.param_shapes])
-    max_maintained_solver = sum([np.prod(p) for p in cell.solver.param_shapes])
+    max_maintained_hnet = cell.hnet.num_params
+    max_maintained_solver = cell.solver.num_params
     # max_maintained = sum([np.prod(p) for p in [*cell.hnet.param_shapes, *cell.solver.param_shapes]])
 
     print(f"- {name} hypernet:\t{num_maintained_hnet}\t({max_maintained_hnet} possible)")
@@ -18,9 +18,8 @@ def get_params_info(cell, path, num_of_maintained_params, max_possible_num_of_ma
     max_possible_num_of_maintained_params += max_maintained_hnet + max_maintained_solver
     
     for child_idx, child in enumerate(cell.children):
-        maintained, max_params = get_params_info(child, path + [child_idx], num_of_maintained_params, max_possible_num_of_maintained_params)
-        num_of_maintained_params += maintained
-        max_possible_num_of_maintained_params += max_params
+        num_of_maintained_params, max_possible_num_of_maintained_params = get_params_info(
+            child, path + [child_idx], num_of_maintained_params, max_possible_num_of_maintained_params)
     return num_of_maintained_params, max_possible_num_of_maintained_params
 
 

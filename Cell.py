@@ -18,6 +18,7 @@ class Cell(nn.Module):
         self.device = device
         self.hnet_theta_optim = None
         self.task_emb_optims = None
+        self.saved_solver_acts = [] # debugging
         self._init_params()
 
         if init_hnet_optim is True:
@@ -88,7 +89,7 @@ class Cell(nn.Module):
         elif child_idx is not None:
             self.children[child_idx].reinit_task_emb_optims(path=path[1:], task_i=task_i)
 
-    def forward(self, x, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}):
+    def forward(self, x, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}, save_last_fc_acts=False):
         assert type(path) == list, "path must be a list of integers"
         
         if len(path) == 0: # hnet -> solver
@@ -96,8 +97,13 @@ class Cell(nn.Module):
             
             ### hypernet -> solver
             theta_solver = self.hnet.forward(cond_id=cond_id, weights=theta_hnet) # hnet -> solver
-            y_hat = self.solver.forward(x, weights=Cell.correct_param_shapes(theta_solver, self.solver.param_shapes))
-            
+            out = self.solver.forward(x, weights=Cell.correct_param_shapes(theta_solver, self.solver.param_shapes), save_last_fc_acts=save_last_fc_acts)
+            # save activations for debugging
+            if type(out) in (list, tuple) and len(out) == 2:
+                y_hat, self.saved_solver_acts = out
+            else:
+                y_hat, self.saved_solver_acts = out, []
+
             ### get task head indices
             task_head_idxs = self.get_task_head_idxs(task_i)
             y_hat = y_hat[:, task_head_idxs[0]:task_head_idxs[1]]
@@ -112,22 +118,31 @@ class Cell(nn.Module):
             theta_child_hnet = self.hnet.forward(cond_id=cond_id, weights=theta_hnet)
             path_trace["cond_ids"].append(cond_id)
             
-            if self.children[child_idx].needs_theta_type == "uncond_weights":
-                theta_child_hnet = {
-                    "uncond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.unconditional_param_shapes)
-                }
-            elif self.children[child_idx].needs_theta_type == "cond_weights":
-                theta_child_hnet = {
-                    "cond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.conditional_param_shapes)
-                }
-            elif self.children[child_idx].needs_theta_type == "all":
-                theta_child_hnet = Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.param_shapes)
-            elif self.children[child_idx].needs_theta_type == "none":
-                theta_child_hnet = None
+            theta_child_hnet = self._package_child_theta(theta_child_hnet, child_idx)
 
-            y_hat, theta_solver, path_trace = self.children[child_idx].forward(x, task_i=task_i, path=path[1:], theta_hnet=theta_child_hnet, path_trace=path_trace)
+            y_hat, theta_solver, path_trace = self.children[child_idx](
+                x, task_i=task_i, path=path[1:], theta_hnet=theta_child_hnet,
+                path_trace=path_trace, save_last_fc_acts=save_last_fc_acts
+            )
         
         return y_hat, theta_solver, path_trace
+
+    def _package_child_theta(self, theta_child_hnet, child_idx):
+        if self.children[child_idx].needs_theta_type == "uncond_weights":
+            theta_child_hnet = {
+                "uncond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.unconditional_param_shapes)
+            }
+        elif self.children[child_idx].needs_theta_type == "cond_weights":
+            theta_child_hnet = {
+                "cond_weights": Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.conditional_param_shapes)
+            }
+        elif self.children[child_idx].needs_theta_type == "all":
+            theta_child_hnet = Cell.correct_param_shapes(theta_child_hnet, self.children[child_idx].hnet.param_shapes)
+        elif self.children[child_idx].needs_theta_type == "none":
+            theta_child_hnet = None
+        else:
+            raise RuntimeError("Child cell doesn't have a valid needs_theta_type property")
+        return theta_child_hnet
 
     def get_task_head_idxs(self, task_i):
         """ Get solver's head indices for a given task """

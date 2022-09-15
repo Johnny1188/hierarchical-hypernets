@@ -67,37 +67,40 @@ def calc_delta_theta(hnet, lr, detach=False):
     return ret
 
 
-def get_reg_loss_for_cond(hnet, hnet_prev_params, lr, reg_cond_id, detach_d_theta=True):
+def get_reg_loss_for_cond(hnet, hnet_prev_params, reg_cond_id, lr, detach_d_theta=True):
     # prepare targets (theta for child nets predicted by previous hnet)
     hnet_mode = hnet.training
     hnet.eval()
     with torch.no_grad():
-        theta_child_target = hnet(cond_id=reg_cond_id, weights={"uncond_weights": hnet_prev_params} if hnet_prev_params is not None else None)
+        theta_target = hnet(cond_id=reg_cond_id, weights=hnet_prev_params if hnet_prev_params is not None else None)
     # detaching target below is important!
-    theta_child_target = torch.cat([p.detach().clone().view(-1) for p in theta_child_target])
+    theta_target = torch.cat([p.detach().clone().view(-1) for p in theta_target])
     hnet.train(mode=hnet_mode)
     
+    # TODO: could this work even if we don't add this d_theta? (we wouldn't need to perform backward pass twice)
     d_theta = calc_delta_theta(hnet, lr, detach=detach_d_theta)
-    theta_parent_for_pred = []
+    theta_hnet_for_pred = []
     for _theta, _d_theta in zip(hnet.internal_params, d_theta):
         if _d_theta is None:
-            theta_parent_for_pred.append(_theta)
+            theta_hnet_for_pred.append(_theta)
         else:
-            theta_parent_for_pred.append(_theta + _d_theta if detach_d_theta is False else _theta + _d_theta.detach())
-    theta_child_predicted = hnet(cond_id=reg_cond_id, weights=theta_parent_for_pred)
-    theta_child_predicted = torch.cat([p.view(-1) for p in theta_child_predicted])
+            theta_hnet_for_pred.append(_theta + _d_theta if detach_d_theta is False else _theta + _d_theta.detach())
+    theta_predicted = hnet(cond_id=reg_cond_id, weights=theta_hnet_for_pred)
+    theta_predicted = torch.cat([p.view(-1) for p in theta_predicted])
 
-    return (theta_child_target - theta_child_predicted).pow(2).sum()
+    return (theta_target - theta_predicted).pow(2).sum()
 
 
-def get_reg_loss(hnet, hnet_prev_params, curr_cond_id, reg_only_until_curr_cond_id=True, lr=1e-3, detach_d_theta=False):
-    reg_loss = 0.
-    num_regs = curr_cond_id if reg_only_until_curr_cond_id is True else hnet._num_cond_embs
-    for cond_i in range(num_regs):
-        if curr_cond_id == cond_i:
-            continue
-        reg_loss += get_reg_loss_for_cond(hnet, hnet_prev_params, lr, cond_i, detach_d_theta)
-    return reg_loss / max(1, num_regs)
+def get_reg_loss(hnet, hnet_prev_params, reg_cond_ids, lr=1e-3, detach_d_theta=True, device="cpu"):
+    """
+    Regularizing the hnet to predict the same theta for the same context
+    (regularization against forgetting)
+    """
+    reg_loss = torch.tensor(0., device=device)
+    # num_regs = curr_cond_id if reg_only_until_curr_cond_id is True else hnet._num_cond_embs
+    for reg_cond_id in reg_cond_ids:
+        reg_loss += get_reg_loss_for_cond(hnet=hnet, hnet_prev_params=hnet_prev_params, reg_cond_id=reg_cond_id, lr=lr, detach_d_theta=detach_d_theta)
+    return reg_loss / max(1, len(reg_cond_ids))
 
 
 def infer(X, scenario, hnet_parent_cond_id, hnet_child_cond_id, hnet_parent, hnet_child, solver_parent, solver_child, config):

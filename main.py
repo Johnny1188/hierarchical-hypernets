@@ -3,8 +3,10 @@ import torch.nn.functional as F
 import json
 import os
 from datetime import datetime
+import matplotlib.pyplot as plt
 import wandb
 
+from utils.visualization import get_summary_plots
 from utils.data import get_data_handlers
 from utils.timing import func_timer
 from utils.metrics import print_arch_summary
@@ -20,6 +22,8 @@ from configs.hypercl_zenke_splitcifar100 import get_config as zenke_cifar_get_co
 
 torch.set_printoptions(precision=3, linewidth=180)
 wandb.login()
+
+LOGS_DIR = "logs"
 
 
 def get_full_config(config_name, cli_args=None):
@@ -46,17 +50,11 @@ def main(cli_args):
         config_name="multiple" if cli_args.config is None else cli_args.config,
         cli_args=cli_args
     )
-    print(f"[INFO] Running on {config['device']}")
     
     ### init architecture
     print(f"[INFO] Initializing architecture")
     [root_cell] = init_arch(arch_config, config)
-    print_arch_summary(root_cell)
     
-    ### prep data
-    print(f"[INFO] Creating data handlers")
-    data_handlers = get_data_handlers(config)
-
     ### init logging
     wandb_run = None
     if config["wandb_logging"] is True:
@@ -69,10 +67,18 @@ def main(cli_args):
         )
         wandb.watch(root_cell, log="all", log_freq=100)
     
+    print(f"[INFO] Running on {config['device']}")
+    print_arch_summary(root_cell)
+    
+    ### prep data
+    print(f"[INFO] Creating data handlers")
+    data_handlers = get_data_handlers(config)
+    
     ### save config and arch_config locally
-    os.makedirs("logs", exist_ok=True)
-    with open(os.path.join("logs", f"config_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.json"), 'w') as f:
-        json.dump({"config": config, "arch_config": arch_config}, f)
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    tm = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    with open(os.path.join(LOGS_DIR, f"config_{tm}.json"), "w") as f:
+        json.dump({"config": config, "arch_config": arch_config}, f, default=str, indent=4)
 
     ### train all possible branches of the cells' tree
     paths = root_cell.get_available_paths()
@@ -90,6 +96,15 @@ def main(cli_args):
     print(f"[INFO] Final evaluation")
     metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=F.cross_entropy)
     print_metrics(metrics)
+
+    ### generate summary plot
+    fig, axes = get_summary_plots(metrics)
+    plt.show()
+    plt.savefig(os.path.join(LOGS_DIR, f"summary_{tm}.png"))
+    if wandb_run is not None:
+        wandb_run.log({"summary": wandb.Image(fig)})
+    
+    wandb_run.finish() if wandb_run is not None else None
 
 
 if __name__ == "__main__":

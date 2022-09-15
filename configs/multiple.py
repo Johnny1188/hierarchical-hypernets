@@ -7,7 +7,7 @@ from configs.solver_specs import get_solver_specs
 
 
 def get_arch_config(config):
-    cell_config = {"hnet": config["hnet"], "solver": config["solver"], "device": config["device"]}
+    cell_config = {"hnet": config["hnet"], "solver": config["solver"], "device": config["device"], "num_tasks": config["data"]["num_tasks"]}
     get_c = lambda: deepcopy(cell_config)
 
     ### ability to have more root cells
@@ -17,7 +17,8 @@ def get_arch_config(config):
             "children": [
                 {
                     **get_c(),
-                    "children": []
+                    "children": [
+                    ]
                 },
             ]
         }
@@ -29,7 +30,7 @@ def get_arch_config(config):
 
 def get_config(cli_args=None):
     config = {
-        "epochs": 80,
+        "epochs": 100,
         "data": {
             # **get_data_specs("mnist|fmnist"),
             # **get_data_specs("splitmnist"),
@@ -48,7 +49,10 @@ def get_config(cli_args=None):
             # "specs": get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=60),
 
             "use": "zenkenet",
-            "specs": get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=60),
+            "specs": {
+                "act_func": torch.nn.LeakyReLU(negative_slope=0.05),
+                **get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=60)
+            },
             # "specs": get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=70),
 
             # "use": "resnet",
@@ -61,10 +65,10 @@ def get_config(cli_args=None):
         "hnet": {
             "model": {
                 # "layers": [100, 150, 200],
-                "layers": [120, 160, 200],
+                "layers": [60, 60],
                 "dropout_rate": -1, # hmlp doesn't get images -> need to be added to resnet
                 "chunk_emb_size": 80, # chunk emb
-                "chunk_size": 12000,
+                "chunk_size": 80000,
                 "num_cond_embs": None, # specified later
                 # "cond_in_size": 48, # task emb
                 "cond_in_size": 400, # task emb
@@ -73,13 +77,15 @@ def get_config(cli_args=None):
                 "root_no_cond_weights": False,
                 "children_no_uncond_weights": True,
                 "children_no_cond_weights": False,
+                # "activation_fn": torch.nn.ReLU(), # dying relu
+                "act_func": torch.nn.LeakyReLU(negative_slope=0.05),
                 # "use_bias": True, # TODO
                 # "use_batch_norm": False, # TODO
             },
             "lr": 0.0001,
             "reg_lr": 0.0001,
             "reg_alpha": 0., # L2 regularization of solvers' parameters
-            "reg_beta": 0.01, # regularization against forgetting other contexts (tasks)
+            "reg_beta": 0.05, # regularization against forgetting other contexts (tasks)
             "adam_beta_1": 0.5,
             "adam_beta_2": 0.999,
             "weight_decay": 0,
@@ -89,8 +95,8 @@ def get_config(cli_args=None):
             "init": {
                 "method": "xavier",
                 "std_normal_init_params": 0.02,
-                "std_normal_init_chunk_embs": 1.0,
-                "std_normal_init_task_embs": 1.0,
+                "std_normal_init_chunk_embs": 0.1,
+                "std_normal_init_task_embs": 0.1,
             }
         },
         "device": "cuda" if torch.cuda.is_available() else "cpu",

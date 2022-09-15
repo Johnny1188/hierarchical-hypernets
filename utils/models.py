@@ -33,8 +33,12 @@ def init_arch(arch_config, config):
 
 def create_tree(cell_config, config):
     # create target network (solver)
-    config["num_cells"] = 1
-    [solver] = get_target_nets(config=config)
+    [solver] = get_target_nets(
+        num_solvers=1,
+        solver_name=config["solver"]["use"],
+        solver_specs=config["solver"]["specs"],
+        device=config["device"],
+    )
 
     # find out the this cell's hypernetwork's output shape
     hnet_out_shape = solver.param_shapes
@@ -70,6 +74,7 @@ def create_tree(cell_config, config):
         num_cond_embs=cell_config["hnet"]["model"]["num_cond_embs"],
         no_uncond_weights=cell_config["hnet"]["model"]["no_uncond_weights"],
         no_cond_weights=cell_config["hnet"]["model"]["no_cond_weights"],
+        activation_fn=cell_config["hnet"]["model"]["act_func"],
     ).to(cell_config["device"])
 
     # package into cell
@@ -131,35 +136,25 @@ def get_hnets(config, target_nets_shapes):
     return hnets
 
 
-def get_target_nets(config):
+def get_target_nets(num_solvers, solver_name, solver_specs, device="cpu"):
     torch.manual_seed(0)
     np.random.seed(0)
 
-    assert "num_cells" in config.keys() and "solver" in config.keys() and "use" in config["solver"].keys(), \
-        f"Missing configurations to generate target networks: {config}"
-
-
     # create target networks (solvers)
     target_nets = []
-    for _ in range(config["num_cells"]):
-        if config["solver"]["use"] == "lenet":
+    for _ in range(num_solvers):
+        if solver_name == "lenet":
             target_nets.append(
-                LeNet(
-                    **config["solver"]["specs"]
-                ).to(config["device"])
+                LeNet(**solver_specs).to(device)
             )
-        elif config["solver"]["use"] == "zenkenet":
+        elif solver_name == "zenkenet":
             target_nets.append(
-                ZenkeNet(
-                    **config["solver"]["specs"]
-                ).to(config["device"])
+                ZenkeNet(**solver_specs).to(device)
             )
-        elif config["solver"]["use"] == "resnet":
+        elif solver_name == "resnet":
             target_nets.append(
-                ResNet(
-                    **config["solver"]["specs"]
-                ).to(config["device"])
+                ResNet(**solver_specs).to(device)
             )
         else:
-            raise ValueError(f"Unknown solver: {config['solver']['use']}")
+            raise ValueError(f"Unknown solver: {solver_name}")
     return target_nets

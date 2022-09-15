@@ -5,6 +5,42 @@ import matplotlib.pyplot as plt
 from torchviz import make_dot
 
 
+def get_summary_plots(metrics, max_cols=3, fig_w=14, fig_h_mul=3):
+    ### create plots of individual accuracies
+    n_rows = math.ceil((len(metrics.keys()) + 1) / max_cols)
+    n_cols = min(max_cols, (len(metrics.keys()) + 1))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, n_rows * fig_h_mul))
+    
+    accs_all_paths = []
+    task_names = []
+    for p_i, (path, tasks) in enumerate(metrics.items()):
+        accs = [task_metrics["acc"] for task_metrics in tasks.values()]
+        task_names = list(tasks.keys())
+        if n_rows == 1:
+            axes[p_i].bar(task_names, accs)
+            axes[p_i].set_title(f"{path} - acc")
+            axes[p_i].set_ylim(0, 100)
+        else:
+            axes[p_i // n_cols][p_i % n_cols].bar(task_names, accs)
+            axes[p_i // n_cols][p_i % n_cols].set_title(f"{path} - acc")
+            axes[p_i // n_cols][p_i % n_cols].set_ylim(0, 100)
+        accs_all_paths.append(accs)
+
+    ### mean accuracies across all paths - TODO: assuming all paths have the same tasks
+    mean_accs = np.mean(accs_all_paths, axis=0)
+    if n_rows == 1:
+        axes[-1].bar(task_names, mean_accs)
+        axes[-1].set_title("mean acc")
+        axes[-1].set_ylim(0, 100)
+    else:
+        axes[-1][-1].bar(task_names, mean_accs)
+        axes[-1][-1].set_title("mean acc")
+        axes[-1][-1].set_ylim(0, 100)
+
+    fig.tight_layout()
+    return fig, axes
+
+
 def resize_dot_graph(dot, size_per_element=0.15, min_size=12):
     """Resize the graph according to how much content it contains.
     Modify the graph in place.
