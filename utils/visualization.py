@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from torchviz import make_dot
 
 
-def get_summary_plots(metrics, max_cols=3, fig_w=14, fig_h_mul=3):
+def get_summary_plots(metrics, max_cols=2, fig_w=16, fig_h_mul=4, with_baselines=False):
     ### create plots of individual accuracies
     n_rows = math.ceil((len(metrics.keys()) + 1) / max_cols)
     n_cols = min(max_cols, (len(metrics.keys()) + 1))
@@ -17,28 +17,71 @@ def get_summary_plots(metrics, max_cols=3, fig_w=14, fig_h_mul=3):
         accs = [task_metrics["acc"] for task_metrics in tasks.values()]
         task_names = list(tasks.keys())
         if n_rows == 1:
-            axes[p_i].bar(task_names, accs)
-            axes[p_i].set_title(f"{path} - acc")
-            axes[p_i].set_ylim(0, 100)
+            axis = axes[p_i]
         else:
-            axes[p_i // n_cols][p_i % n_cols].bar(task_names, accs)
-            axes[p_i // n_cols][p_i % n_cols].set_title(f"{path} - acc")
-            axes[p_i // n_cols][p_i % n_cols].set_ylim(0, 100)
+            axis = axes[p_i // n_cols, p_i % n_cols]
+            # axes[p_i // n_cols][p_i % n_cols].bar(task_names, accs)
+            # axes[p_i // n_cols][p_i % n_cols].set_title(f"{path} - acc")
+            # axes[p_i // n_cols][p_i % n_cols].set_ylim(0, 100)
+        axis.bar(task_names, accs)
+        axis.set_title(f"{path} - acc", fontweight="bold")
+        axis.set_xlabel("task", fontweight="bold")
+        axis.set_ylabel("accuracy", fontweight="bold")
+        axis.set_ylim(0, 100)
+        
         accs_all_paths.append(accs)
 
     ### mean accuracies across all paths - TODO: assuming all paths have the same tasks
     mean_accs = np.mean(accs_all_paths, axis=0)
     if n_rows == 1:
-        axes[-1].bar(task_names, mean_accs)
-        axes[-1].set_title("mean acc")
+        if with_baselines:
+            axes[-1] = get_final_w_baselines(axes[-1], task_names, mean_accs)
+        else:
+            axes[-1].bar(task_names, mean_accs)
+        axes[-1].set_title("Final result")
         axes[-1].set_ylim(0, 100)
     else:
-        axes[-1][-1].bar(task_names, mean_accs)
-        axes[-1][-1].set_title("mean acc")
+        if with_baselines:
+            axes[-1][-1] = get_final_w_baselines(axes[-1][-1], task_names, mean_accs)
+        else:
+            axes[-1][-1].bar(task_names, mean_accs)
+        axes[-1][-1].set_title("Final result", fontweight="bold")
         axes[-1][-1].set_ylim(0, 100)
 
     fig.tight_layout()
     return fig, axes
+
+
+def get_final_w_baselines(axis, task_names, mean_accs, bar_width=0.25):
+    assert len(task_names) == len(mean_accs), "Task names and mean accuracies must have the same length."
+    assert len(task_names) == 6, "Baselines only available for SplitCIFAR100 having 6 tasks."
+
+    # baselines from Johannes von Oswald et. al. (2019): https://arxiv.org/abs/1906.00695
+    to_plot = {
+        "multi-hnet": mean_accs,
+        "single-hnet": [73, 69, 66, 74, 69, 75],
+        "from-scratch": [77, 63, 57, 69, 58, 65],
+        "synaptic-intelligence": [74, 72, 71, 76, 70, 77],
+    }
+
+    # positions on the x-axis
+    # x_pos = np.arange(start=0, stop=len(mean_accs), step=bar_width)
+    init_x_pos = np.array([x_i * (bar_width * len(to_plot) + 0.3) for x_i in range(len(task_names))])
+    x_pos = init_x_pos.copy()
+
+    for name, results in to_plot.items():
+        rects = axis.bar(x_pos, results, width=bar_width, label=name)
+        axis.bar_label(rects, padding=3)
+        x_pos = x_pos + bar_width
+
+    # Add xticks on the middle of the group bars
+    axis.set_xlabel("task", fontweight="bold")
+    axis.set_ylabel("accuracy", fontweight="bold")
+    axis.set_xticks([x_pos + bar_width * (len(to_plot) // 2) for x_pos in init_x_pos], task_names)
+    
+    # Create legend & Show graphic
+    axis.legend(loc="lower center", ncol=len(task_names), bbox_to_anchor=(0.5, -0.3))
+    return axis
 
 
 def resize_dot_graph(dot, size_per_element=0.15, min_size=12):

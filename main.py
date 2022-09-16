@@ -54,7 +54,7 @@ def main(cli_args):
     ### init architecture
     print(f"[INFO] Initializing architecture")
     [root_cell] = init_arch(arch_config, config)
-    
+
     ### init logging
     wandb_run = None
     if config["wandb_logging"] is True:
@@ -81,7 +81,7 @@ def main(cli_args):
         json.dump({"config": config, "arch_config": arch_config}, f, default=str, indent=4)
 
     ### train all possible branches of the cells' tree
-    paths = root_cell.get_available_paths()
+    paths = root_cell.get_available_paths([], [])
     print(f"[INFO] Training starts with the following paths:\n{paths}")
     train(
         data_handlers=data_handlers,
@@ -98,9 +98,9 @@ def main(cli_args):
     print_metrics(metrics)
 
     ### generate summary plot
-    fig, axes = get_summary_plots(metrics)
-    plt.show()
+    fig, axes = get_summary_plots(metrics, with_baselines=True)
     plt.savefig(os.path.join(LOGS_DIR, f"summary_{tm}.png"))
+    plt.show()
     if wandb_run is not None:
         wandb_run.log({"summary": wandb.Image(fig)})
     

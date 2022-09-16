@@ -26,6 +26,7 @@ def init_arch(arch_config, config):
     root_cells = []
     for root_cell_config in arch_config:
         root_cell = create_tree(root_cell_config, config)
+        root_cell.init_cond_id_mapping(init_children=True)
         root_cells.append(root_cell)
 
     return root_cells

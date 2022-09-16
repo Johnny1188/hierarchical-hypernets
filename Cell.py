@@ -18,14 +18,34 @@ class Cell(nn.Module):
         self.device = device
         self.hnet_theta_optim = None
         self.task_emb_optims = None
+        self.cond_id_mapping = None
         self.saved_solver_acts = [] # debugging
         self._init_params()
 
         if init_hnet_optim is True:
-            self.reinit_hnet_theta_optim()
-            self.reinit_task_emb_optims()
+            self.reinit_uncond_params_optim()
+            self.reinit_cond_embs_optims()
 
-    def reinit_hnet_theta_optim(self):
+    def init_cond_id_mapping(self, init_children=True):
+        if init_children is True:
+            for child in self.children:
+                child.init_cond_id_mapping(init_children=True)
+        
+        av_paths = self.get_available_paths([], [])
+        self.cond_id_mapping = {}
+
+        starting_cond_id = 0
+        for path in av_paths:
+            last_child_n_tasks = self.get_child_at_path(path).num_tasks
+            self.cond_id_mapping[tuple(path)] = list(range(starting_cond_id, starting_cond_id + last_child_n_tasks))
+            starting_cond_id += last_child_n_tasks
+
+    def get_child_at_path(self, path):
+        if len(path) == 0:
+            return self
+        return self.children[path[0]].get_child_at_path(path[1:])
+
+    def reinit_uncond_params_optim(self):
         ### note: unconditional params include chunk embeddings when they are not conditional (self.hnet.cond_chunk_embs == False)
         if self.hnet.unconditional_params is not None:
             self.hnet_theta_optim = get_optimizer(
@@ -39,22 +59,15 @@ class Cell(nn.Module):
             self.hnet_theta_optim = None
         
         for child in self.children:
-            child.reinit_hnet_theta_optim()
+            child.reinit_uncond_params_optim()
     
-    def reinit_task_emb_optims(self, path=None, task_i=None):
-        assert type(path) == list or (task_i is None and path is None), \
-            "path must be a list of integers or task_i and path must be None (all task emb optims are reinitialized)"
-
-        child_idx = None
-        if path is  not None and len(path) > 0:
-            child_idx = path[0]
-
+    def reinit_cond_embs_optims(self, path=[], task_i=None, reinit_all_children=False):
         if self.hnet.conditional_params is None: # no conditional params
             self.task_emb_optims = None
         else:
             if task_i is not None and self.task_emb_optims is not None:
-                ### reinitialize only a single task/context embedding optimizer
-                cond_id = self.get_cond_id(task_i, child_idx)
+                ### reinitialize only a single path---task/context embedding optimizer
+                cond_id = self.get_cond_id(task_i, path)
                 params = [self.hnet.conditional_params[cond_id]]
                 if self.hnet.cond_chunk_embs is True: # chunk embeddings may also be conditional
                     params.append(self.hnet.get_chunk_emb(cond_id=cond_id))
@@ -83,18 +96,18 @@ class Cell(nn.Module):
                     ) for params_for_cond in params_per_optim
                 ]
 
-        if path is None:
+        if reinit_all_children is True: # reinit all children
             for child in self.children:
-                child.reinit_task_emb_optims(path=None, task_i=None)
-        elif child_idx is not None:
-            self.children[child_idx].reinit_task_emb_optims(path=path[1:], task_i=task_i)
+                child.reinit_cond_embs_optims(path=[], task_i=None, reinit_all_children=True)
+        elif len(path) > 0:
+            self.children[path[0]].reinit_cond_embs_optims(path=path[1:], task_i=task_i, reinit_all_children=reinit_all_children)
 
     def forward(self, x, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}, save_last_fc_acts=False):
         assert type(path) == list, "path must be a list of integers"
         
+        cond_id = self.get_cond_id(task_i, path)
+        
         if len(path) == 0: # hnet -> solver
-            cond_id = self.get_cond_id(task_i, None)
-            
             ### hypernet -> solver
             theta_solver = self.hnet.forward(cond_id=cond_id, weights=theta_hnet) # hnet -> solver
             out = self.solver.forward(x, weights=Cell.correct_param_shapes(theta_solver, self.solver.param_shapes), save_last_fc_acts=save_last_fc_acts)
@@ -114,7 +127,6 @@ class Cell(nn.Module):
         else: # hnet -> hnet
             ### generate params (theta) for child cell's hypernet
             child_idx = path[0]
-            cond_id = self.get_cond_id(task_i, child_idx)
             theta_child_hnet = self.hnet.forward(cond_id=cond_id, weights=theta_hnet)
             path_trace["cond_ids"].append(cond_id)
             
@@ -151,11 +163,8 @@ class Cell(nn.Module):
         
         return [self.config["solver"]["task_heads"][task_i][0], self.config["solver"]["task_heads"][task_i][1]]
 
-    def get_cond_id(self, task_i, child_idx):
-        if child_idx is None:
-            return task_i
-        else:
-            return task_i + ((child_idx + 1) * self.num_tasks) # children indexed from 0
+    def get_cond_id(self, task_i, path):
+        return self.cond_id_mapping[tuple(path)][task_i]
 
     def toggle_mode(self, mode):
         assert mode in ("train", "eval"), "Unknown mode (only 'train' and 'eval')."
@@ -179,23 +188,19 @@ class Cell(nn.Module):
     def step(self, path, task_i=None):
         assert type(path) == list, "path must be a list of integers"
 
-        child_idx = None
-        if len(path) > 0:
-            child_idx = path[0]
-
         ### step hnet's unconditional parameters (theta - everything except task embeddings)
         if self.hnet_theta_optim is not None:
             self.hnet_theta_optim.step()
             
         if self.task_emb_optims is not None:
             if task_i is not None: # step only a single task embedding optimizer
-                self.task_emb_optims[self.get_cond_id(task_i, child_idx)].step()
+                self.task_emb_optims[self.get_cond_id(task_i, path)].step()
             else: # step with all task embedding optimizers
                 for task_emb_optim in self.task_emb_optims:
                     task_emb_optim.step()
         
-        if child_idx is not None:
-            self.children[child_idx].step(path=path[1:], task_i=task_i)
+        if len(path) > 0:
+            self.children[path[0]].step(path=path[1:], task_i=task_i)
     
     def clip_grads(self):
         if self.config["hnet"]["reg_clip_grads_max_norm"] is not None and self.config["hnet"]["reg_clip_grads_max_value"] is not None:

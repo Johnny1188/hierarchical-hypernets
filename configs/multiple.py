@@ -18,13 +18,17 @@ def get_arch_config(config):
                 {
                     **get_c(),
                     "children": [
+                        {
+                            **get_c(),
+                            "children": []
+                        },
                     ]
                 },
             ]
         }
     ]
 
-    final_arch_config = [finish_arch_config(root_cell, root_level=True) for root_cell in arch_config]
+    final_arch_config = [finish_arch_config(root_cell, root_level=True)[0] for root_cell in arch_config]
     return final_arch_config
 
 

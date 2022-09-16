@@ -12,7 +12,7 @@ def get_params_info(cell, path, num_of_maintained_params, max_possible_num_of_ma
     # max_maintained = sum([np.prod(p) for p in [*cell.hnet.param_shapes, *cell.solver.param_shapes]])
 
     print(f"- {name} hypernet:\t{num_maintained_hnet}\t({max_maintained_hnet} possible)")
-    print(f"- {name} solver:\t{num_maintained_solver}\t({max_maintained_solver} possible)")
+    print(f"- {name} solver: \t{num_maintained_solver}\t({max_maintained_solver} possible)")
 
     num_of_maintained_params += num_maintained_hnet + num_maintained_solver
     max_possible_num_of_maintained_params += max_maintained_hnet + max_maintained_solver

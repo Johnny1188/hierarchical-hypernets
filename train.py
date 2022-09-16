@@ -177,8 +177,8 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
     path = paths[path_i]
     root_hnet_cond_ids_now_trained = set()
     
-    root_cell.reinit_hnet_theta_optim()
-    root_cell.reinit_task_emb_optims(path=path, task_i=task_i)
+    root_cell.reinit_uncond_params_optim()
+    root_cell.reinit_cond_embs_optims(path=path, task_i=task_i, reinit_all_children=False) # reinit only for cells on the path
     
     for epoch in range(config["epochs"]):
         for _, X, y in task_data.train_iterator(config["data"]["batch_size"]):
