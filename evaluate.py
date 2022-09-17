@@ -9,7 +9,7 @@ import wandb
 
 from utils.visualization import show_imgs, get_model_dot
 from utils.timing import func_timer
-from utils.metrics import get_accuracy, calc_accuracy, print_arch_summary
+from utils.metrics import get_metrics_path_key, get_metrics_task_key, get_accuracy, calc_accuracy, print_arch_summary
 
 torch.set_printoptions(precision=3, linewidth=180)
 wandb.login()
@@ -65,7 +65,7 @@ def evaluate(root_cell, data_handlers, config, paths, loss_fn=F.cross_entropy):
     
     with torch.no_grad():
         for p_i, path in enumerate(paths):
-            m_key_p = f"[P{p_i + 1}-{''.join([str(i) for i in path])}]"
+            m_key_p = get_metrics_path_key(p_i, path)
             metrics[m_key_p] = {}
             for task_i, task_data in enumerate(data_handlers):
                 curr_task_metrics = eval_task(
@@ -78,7 +78,7 @@ def evaluate(root_cell, data_handlers, config, paths, loss_fn=F.cross_entropy):
                 )
                 
                 # add to metrics
-                m_key_t = f"[T{task_i + 1}]"
+                m_key_t = get_metrics_task_key(task_i)
                 metrics[m_key_p][m_key_t] = curr_task_metrics
 
     root_cell.toggle_mode(mode="train")

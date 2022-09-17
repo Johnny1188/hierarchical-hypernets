@@ -1,3 +1,4 @@
+import os
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -8,6 +9,7 @@ from copy import deepcopy
 import gc
 from IPython.display import clear_output
 import time
+from datetime import datetime
 import wandb
 import json
 from hypnettorch.data import FashionMNISTData, MNISTData
@@ -28,6 +30,31 @@ from utils.models import get_target_nets, get_hnets
 
 torch.set_printoptions(precision=3, linewidth=180)
 wandb.login()
+
+
+def init_run_logging(config, arch_config, cli_args, cells_to_watch=[], logs_dir="logs"):
+    ### init wandb
+    wandb_run = None
+    if config["wandb_logging"] is True:
+        wandb_notes = "" if cli_args.description is None else cli_args.description
+        wandb_run = wandb.init(
+            project="Hypernets", entity="johnny1188",
+            config={"config": config, "arch": arch_config},
+            group=config["data"]["name"],
+            tags=[], notes=wandb_notes
+        )
+        for c in cells_to_watch:
+            wandb.watch(c, log="all", log_freq=100)
+    
+    ### save config and arch_config locally
+    tm = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    run_name = f"run_{tm}"
+    path_to_run_dir = os.path.join(logs_dir, run_name)
+    os.makedirs(path_to_run_dir, exist_ok=True)
+    with open(os.path.join(path_to_run_dir, f"full_config.json"), "w") as f:
+        json.dump({"config": config, "arch_config": arch_config}, f, default=str, indent=4)
+
+    return run_name, path_to_run_dir, tm, wandb_run
 
 
 def print_metrics(metrics, indent=0):

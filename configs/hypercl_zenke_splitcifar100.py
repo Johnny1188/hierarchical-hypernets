@@ -1,3 +1,4 @@
+import os
 import torch
 from copy import deepcopy
 
@@ -31,7 +32,7 @@ def get_config(cli_args=None):
             "num_tasks": 6,
             "num_classes_per_task": 10,
             "batch_size": 256,
-            "data_dir": "data",
+            "data_dir": "data" if os.environ.get("DATA_PATH") is None else os.path.join(os.environ.get("DATA_PATH"), "cl"),
             "validation_size": 0,
         },
         "solver": {

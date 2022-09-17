@@ -7,6 +7,7 @@ import random
 from hypnettorch.data import FashionMNISTData, MNISTData
 from hypnettorch.data.special.split_mnist import get_split_mnist_handlers
 from hypnettorch.data.special.split_cifar import get_split_cifar_handlers
+from hypnettorch.data.special.permuted_mnist import PermutedMNISTList
 
 DATA_PATH = os.getenv("DATA_PATH")
 
@@ -18,28 +19,6 @@ def seed_worker(worker_id):
 
 g = torch.Generator()
 g.manual_seed(0)
-
-
-class ResizeTransform:
-    def __init__(self, in_shape, output_shape, return_flattened=False):
-        self.output_shape = output_shape # expects [H x W]
-        self.in_shape = in_shape
-        self.return_flattened = return_flattened
-
-    def __call__(self, x, batched=True):
-        # expects x to be a tensor of shape [B, C x H x W]
-        if batched:
-            x = x.view(-1, *self.in_shape)
-            x = x.permute(0, 3, 1, 2)
-        else:
-            x = x.view(*self.in_shape)
-            x = x.permute(2, 0, 1)
-        
-        x = TF.resize(x, self.output_shape)
-        if self.return_flattened:
-            return x.view(-1, np.prod(x.shape[1:]))
-        else:
-            return x
 
 
 def get_data_handlers(config):
@@ -54,21 +33,64 @@ def get_data_handlers(config):
         data_handlers = [mnist, fmnist]
     elif config["data"]["name"] == "splitmnist":
         data_handlers = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+    elif config["data"]["name"] == "permutedmnist":
+        rand = np.random.RandomState(0) # ensure reproducibility
+        permutations = [None] + [rand.permutation(28*28) for _ in range(config["data"]["num_tasks"] - 1)]
+        data_handlers = PermutedMNISTList(permutations, config["data"]["data_dir"],
+            padding=0, trgt_padding=None, show_perm_change_msg=False, validation_size=config["data"]["validation_size"])
     elif config["data"]["name"] in ("splitcifar10", "splitcifar100"):
         data_handlers = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["num_tasks"], num_classes_per_task=config["data"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
     elif config["data"]["name"] == "splitmnist,splitcifar100":
         splitmnist = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitmnist"]["num_tasks"], num_classes_per_task=config["data"]["splitmnist"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
-        splitcifar100 = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitcifar100"]["num_tasks"], num_classes_per_task=config["data"]["splitcifar100"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
-        raise NotImplementedError("TODO - different num of channels - grayscale cifar?")
-        for d in splitcifar100: # additional resizing to match mnist
-            d.transform = ResizeTransform(in_shape=(32, 32, 3), out_shape=(28, 28), return_flattened=True)
+        # transform mnist data to match cifar
+        for data_handler in splitmnist:
+            # pad with zeros to match cifar
+            data_handler._data["in_data"] = np.pad(
+                data_handler._data["in_data"].reshape(-1,28,28,1),
+                pad_width=((0,0),(2,2),(2,2),(0,0)),
+                mode="constant",
+                constant_values=0
+            ).reshape(-1, 32 * 32)
+            # convert to rgb
+            data_handler._data["in_data"] = np.repeat(data_handler._data["in_data"], repeats=3, axis=-1)
+            data_handler._data["in_shape"] = [32, 32, 3]
 
+        splitcifar100 = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitcifar100"]["num_tasks"], num_classes_per_task=config["data"]["splitcifar100"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
         data_handlers = [*splitmnist, *splitcifar100]
+    elif config["data"]["name"] == "permutedmnist,splitcifar100,splitmnist":
+        # Permuted MNIST
+        rand = np.random.RandomState(0) # ensure reproducibility
+        permutations = [None] + [rand.permutation(32*32) for _ in range(config["data"]["permutedmnist"]["num_tasks"] - 1)]
+        perm_mnist_list = PermutedMNISTList(permutations, config["data"]["data_dir"], padding=2, trgt_padding=None,
+            show_perm_change_msg=False, validation_size=config["data"]["validation_size"], use_3_channels=True)
+        # convert to 3 channels
+        channels_tr = transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.size(0)==1 else x)
+        for data_handler in perm_mnist_list:
+            data_handler._transform.transforms.append(channels_tr)
+            data_handler._using_3_channels = True
+        
+        # SplitCIFAR100
+        splitcifar100 = get_split_cifar_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitcifar100"]["num_tasks"], num_classes_per_task=config["data"]["splitcifar100"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+
+        # SplitMNIST
+        splitmnist = get_split_mnist_handlers(config["data"]["data_dir"], use_one_hot=True, num_tasks=config["data"]["splitmnist"]["num_tasks"], num_classes_per_task=config["data"]["splitmnist"]["num_classes_per_task"], validation_size=config["data"]["validation_size"])
+        # transform mnist data to match cifar
+        for data_handler in splitmnist:
+            # pad with zeros to match cifar
+            data_handler._data["in_data"] = np.pad(
+                data_handler._data["in_data"].reshape(-1,28,28,1),
+                pad_width=((0,0),(2,2),(2,2),(0,0)),
+                mode="constant",
+                constant_values=0
+            ).reshape(-1, 32 * 32)
+            # convert to rgb
+            data_handler._data["in_data"] = np.repeat(data_handler._data["in_data"], repeats=3, axis=-1)
+            data_handler._data["in_shape"] = [32, 32, 3]
+
+        data_handlers = [*perm_mnist_list, *splitcifar100, *splitmnist]
     else:
         raise NotImplementedError(f"Unknown dataset: {config['data']['name']}")
 
-    assert config["data"]["num_tasks"] == len(data_handlers), "Number of tasks does not match number of data handlers"
-    
     return data_handlers
 
 

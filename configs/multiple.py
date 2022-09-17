@@ -1,25 +1,23 @@
+import os
 import torch
 from copy import deepcopy
 
-from utils.configs import finish_arch_config
+from utils.configs import finish_arch_config, get_cell_config
 from configs.data_specs import get_data_specs
 from configs.solver_specs import get_solver_specs
 
 
 def get_arch_config(config):
-    cell_config = {"hnet": config["hnet"], "solver": config["solver"], "device": config["device"], "num_tasks": config["data"]["num_tasks"]}
-    get_c = lambda: deepcopy(cell_config)
-
     ### ability to have more root cells
     arch_config = [
         {
-            **get_c(),
+            **get_cell_config(config),
             "children": [
                 {
-                    **get_c(),
+                    **get_cell_config(config),
                     "children": [
                         {
-                            **get_c(),
+                            **get_cell_config(config),
                             "children": []
                         },
                     ]
@@ -35,14 +33,20 @@ def get_arch_config(config):
 def get_config(cli_args=None):
     config = {
         "epochs": 100,
+        "use_early_stopping": True,
+        "early_stopping": {
+            "patience": 8,
+            "min_delta": 0.001,
+        },
         "data": {
             # **get_data_specs("mnist|fmnist"),
             # **get_data_specs("splitmnist"),
             # **get_data_specs("splitcifar10"),
             **get_data_specs("splitcifar100"),
             # **get_data_specs("splitmnist,splitcifar100"),
+            # **get_data_specs("permutedmnist,splitcifar100,splitmnist", n_permuations=25),
             "batch_size": 256,
-            "data_dir": "data",
+            "data_dir": "data" if os.environ.get("DATA_PATH") is None else os.path.join(os.environ.get("DATA_PATH"), "cl"),
             "validation_size": 0,
         },
         "solver": {
@@ -62,9 +66,7 @@ def get_config(cli_args=None):
             # "use": "resnet",
             # "specs": get_solver_specs("resnet", in_shape=[32, 32, 3], num_outputs=10),
 
-            # "task_heads": None,
-            "task_heads": [(0,10), (10, 20), (20, 30), (30, 40), (40, 50), (50, 60)],
-            # "task_heads": [(0,2), (2,4), (4,6), (6,8), (8,10), (10,20), (20,30), (30,40), (40,50), (50,60), (60,70)],
+            "task_heads": None, # specified below (depends on the dataset loaded above)
         },
         "hnet": {
             "model": {
@@ -72,7 +74,7 @@ def get_config(cli_args=None):
                 "layers": [60, 60],
                 "dropout_rate": -1, # hmlp doesn't get images -> need to be added to resnet
                 "chunk_emb_size": 80, # chunk emb
-                "chunk_size": 80000,
+                "chunk_size": 60000,
                 "num_cond_embs": None, # specified later
                 # "cond_in_size": 48, # task emb
                 "cond_in_size": 400, # task emb
@@ -81,10 +83,8 @@ def get_config(cli_args=None):
                 "root_no_cond_weights": False,
                 "children_no_uncond_weights": True,
                 "children_no_cond_weights": False,
-                # "activation_fn": torch.nn.ReLU(), # dying relu
+                # "act_func": torch.nn.ReLU(), # dying relu
                 "act_func": torch.nn.LeakyReLU(negative_slope=0.05),
-                # "use_bias": True, # TODO
-                # "use_batch_norm": False, # TODO
             },
             "lr": 0.0001,
             "reg_lr": 0.0001,
@@ -122,6 +122,7 @@ def get_config(cli_args=None):
             config["solver"]["specs"].update(get_solver_specs(cli_args.solver, in_shape=config["data"]["in_shape"], num_outputs=config["data"]["num_classes_per_task"]))
     
     config["solver"]["in_shape"] = config["data"]["in_shape"]
-    config["hnet"]["model"]["num_cond_embs"] = config["data"]["num_tasks"] * 2 # TODO: make conditional on the architecture
+    config["solver"]["task_heads"] = config["data"]["task_separation_idxs"]
+    config["solver"]["num_classes"] =config["solver"]["task_heads"][-1][-1] + 1
 
     return config

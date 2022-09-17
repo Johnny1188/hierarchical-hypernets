@@ -16,9 +16,9 @@ from hypnettorch.hnets import HMLP, StructuredHMLP, ChunkedHMLP
 
 from utils.data import get_mnist_data_loaders, get_emnist_data_loaders, randomize_targets, select_from_classes
 from utils.visualization import show_imgs, get_model_dot
-from utils.others import get_optimizer, measure_alloc_mem, count_parameters
+from utils.others import get_optimizer, measure_alloc_mem, count_parameters, EarlyStopper
 from utils.timing import func_timer
-from utils.metrics import get_accuracy, calc_accuracy
+from utils.metrics import get_metrics_path_key, get_metrics_task_key, get_accuracy, calc_accuracy
 from utils.hypnettorch_utils import get_reg_loss
 from utils.logging import print_metrics, log_wandb
 from utils.cli_args import get_args
@@ -179,13 +179,14 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
     
     root_cell.reinit_uncond_params_optim()
     root_cell.reinit_cond_embs_optims(path=path, task_i=task_i, reinit_all_children=False) # reinit only for cells on the path
-    
+    early_stopper = None
+    if config["use_early_stopping"] is True and "early_stopping" in config.keys():
+        early_stopper = EarlyStopper(patience=config["early_stopping"]["patience"], min_delta=config["early_stopping"]["min_delta"])
+
     for epoch in range(config["epochs"]):
         for _, X, y in task_data.train_iterator(config["data"]["batch_size"]):
             X = task_data.input_to_torch_tensor(X, config["device"], mode="train")
             y = task_data.output_to_torch_tensor(y, config["device"], mode="train")
-            if hasattr(task_data, "transform"): # additional transformation
-                X = task_data.transform(X, batched=True)
 
             root_cell.zero_grad() # zero gradients of all cells in this root's tree
 
@@ -246,6 +247,11 @@ def train_task(data_handlers, task_i, root_cell, config, paths, path_i, hnet_roo
                 metrics[f"solver_acts_mean_l{l_i}"] = wandb.Histogram(layer_acts_mean.detach().clone().tolist())
                 metrics[f"solver_acts_std_l{l_i}"] = wandb.Histogram(layer_acts_std.detach().clone().tolist())
             log_wandb(metrics, wandb_run)
+        
+        # early stopping (using test/val data)
+        if early_stopper is not None and early_stopper.early_stop(
+            loss=metrics[get_metrics_path_key(path_i, path)][get_metrics_task_key(task_i)]["total_loss"]):
+            break
 
     ### add the root's hnet cond_ids that were used during this task - used for regularization against forgetting
     root_hnet_cond_ids_already_trained.update(root_hnet_cond_ids_now_trained)
@@ -267,9 +273,6 @@ def train(data_handlers, root_cell, config, paths, wandb_run=None, loss_fn=F.cro
     for p_i, path in enumerate(paths):
         # sequential training on tasks
         for task_i in range(len(data_handlers)):
-            # save parameters before solving the task for regularization against forgetting
-            hnet_root_prev_params = {"uncond_weights": [p.detach().clone() for p_idx, p in enumerate(root_cell.hnet.unconditional_params)]}
-            
             root_hnet_cond_ids_already_trained = train_task(
                 data_handlers=data_handlers,
                 task_i=task_i,
@@ -282,6 +285,9 @@ def train(data_handlers, root_cell, config, paths, wandb_run=None, loss_fn=F.cro
                 wandb_run=wandb_run,
                 loss_fn=loss_fn,
             )
+
+            # save parameters for regularization against forgetting (doesn't apply to the first task)
+            hnet_root_prev_params = {"uncond_weights": [p.detach().clone() for p_idx, p in enumerate(root_cell.hnet.unconditional_params)]}
 
             print(f"[INFO] Training on [P{p_i + 1}/{len(paths)}-{''.join([str(i) for i in path])} | T{task_i + 1}/{len(data_handlers)}] has finished")
             metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=loss_fn)

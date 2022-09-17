@@ -32,7 +32,7 @@ def get_summary_plots(metrics, max_cols=2, fig_w=16, fig_h_mul=4, with_baselines
         accs_all_paths.append(accs)
 
     ### mean accuracies across all paths - TODO: assuming all paths have the same tasks
-    mean_accs = np.mean(accs_all_paths, axis=0)
+    mean_accs = list(np.mean(accs_all_paths, axis=0))
     if n_rows == 1:
         if with_baselines:
             axes[-1] = get_final_w_baselines(axes[-1], task_names, mean_accs)

@@ -26,6 +26,48 @@ class Cell(nn.Module):
             self.reinit_uncond_params_optim()
             self.reinit_cond_embs_optims()
 
+    def save_tree(self, curr_path, dict_to_save, path_to_checkpoint_file, is_root=True):
+        dict_to_save[f"{''.join([str(s) for s in curr_path])}_state_dict"] = self.state_dict()
+        dict_to_save[f"{''.join([str(s) for s in curr_path])}_additionals"] = self.dump_cell_additionals()
+
+        for c_idx, child_cell in enumerate(self.children):
+            child_cell.save_tree(curr_path=curr_path + [c_idx], dict_to_save=dict_to_save, path_to_checkpoint_file=None, is_root=False)
+
+        if is_root:
+            torch.save(dict_to_save, path_to_checkpoint_file)
+
+    def load_tree(self, curr_path, check_dict, path_to_checkpoint_file):
+        if check_dict is None:
+            check_dict = torch.load(path_to_checkpoint_file)
+
+        path_key = ''.join([str(s) for s in curr_path])
+        self.load_state_dict(check_dict[f"{path_key}_state_dict"])
+        self.load_additionals(check_dict[f"{path_key}_additionals"])
+        del check_dict[f"{path_key}_state_dict"]
+        del check_dict[f"{path_key}_additionals"]
+
+        for c_idx, child_cell in enumerate(self.children):
+            child_cell.load_tree(curr_path=curr_path + [c_idx], check_dict=check_dict, path_to_checkpoint_file=None)
+
+        return check_dict
+
+    def dump_cell_additionals(self):
+        c_adds = {}
+        c_adds["num_tasks"] = self.num_tasks
+        c_adds["needs_theta_type"] = self.needs_theta_type
+        c_adds["config"] = self.config
+        c_adds["device"] = self.device
+        c_adds["cond_id_mapping"] = self.cond_id_mapping
+        return c_adds
+
+    def load_additionals(self, cell_additionals):
+        self.num_tasks = cell_additionals["num_tasks"]
+        self.needs_theta_type = cell_additionals["needs_theta_type"]
+        self.config = cell_additionals["config"]
+        self.device = cell_additionals["device"]
+        self.cond_id_mapping = cell_additionals["cond_id_mapping"]
+        return self
+
     def init_cond_id_mapping(self, init_children=True):
         if init_children is True:
             for child in self.children:

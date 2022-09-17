@@ -10,7 +10,7 @@ from utils.visualization import get_summary_plots
 from utils.data import get_data_handlers
 from utils.timing import func_timer
 from utils.metrics import print_arch_summary
-from utils.logging import print_metrics
+from utils.logging import print_metrics, init_run_logging
 from utils.models import init_arch
 from utils.cli_args import get_args
 from train import train
@@ -23,7 +23,7 @@ from configs.hypercl_zenke_splitcifar100 import get_config as zenke_cifar_get_co
 torch.set_printoptions(precision=3, linewidth=180)
 wandb.login()
 
-LOGS_DIR = "logs"
+ARTIFACTS_DIR = "artifacts"
 
 
 def get_full_config(config_name, cli_args=None):
@@ -47,38 +47,35 @@ def main(cli_args):
     ### prepare config for the run
     print(f"[INFO] Reading config")
     config, arch_config = get_full_config(
-        config_name="multiple" if cli_args.config is None else cli_args.config,
+        config_name="single" if cli_args.config is None else cli_args.config,
         cli_args=cli_args
     )
     
     ### init architecture
     print(f"[INFO] Initializing architecture")
     [root_cell] = init_arch(arch_config, config)
+    # load parameters if specified
+    if cli_args.checkpoint_file is not None:
+        if os.path.exists(cli_args.checkpoint_file) is False:
+            raise ValueError(f"Checkpoint path does not exist: {cli_args.checkpoint_file}")
+        print(f"[INFO] Loading checkpoint from: {cli_args.checkpoint_file}")
+        root_cell.load_tree(curr_path=[], check_dict=None, path_to_checkpoint_file=cli_args.checkpoint_file)
 
     ### init logging
-    wandb_run = None
-    if config["wandb_logging"] is True:
-        wandb_notes = "" if cli_args.description is None else cli_args.description
-        wandb_run = wandb.init(
-            project="Hypernets", entity="johnny1188",
-            config={"config": config, "arch": arch_config},
-            group=config["data"]["name"],
-            tags=[], notes=wandb_notes
-        )
-        wandb.watch(root_cell, log="all", log_freq=100)
-    
+    run_name, path_to_run_dir, tm, wandb_run = init_run_logging(
+        config=config,
+        arch_config=arch_config,
+        cli_args=cli_args,
+        cells_to_watch=[root_cell],
+        logs_dir=ARTIFACTS_DIR
+    )
+
     print(f"[INFO] Running on {config['device']}")
     print_arch_summary(root_cell)
     
     ### prep data
     print(f"[INFO] Creating data handlers")
     data_handlers = get_data_handlers(config)
-    
-    ### save config and arch_config locally
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    tm = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-    with open(os.path.join(LOGS_DIR, f"config_{tm}.json"), "w") as f:
-        json.dump({"config": config, "arch_config": arch_config}, f, default=str, indent=4)
 
     ### train all possible branches of the cells' tree
     paths = root_cell.get_available_paths([], [])
@@ -92,14 +89,17 @@ def main(cli_args):
         loss_fn=F.cross_entropy,
     )
 
+    ### save the whole cells tree
+    root_cell.save_tree(curr_path=[], dict_to_save={}, path_to_checkpoint_file=os.path.join(path_to_run_dir, "tree.tar"), is_root=True)
+
     ### final evaluation
-    print(f"[INFO] Final evaluation")
+    print(f"[INFO] Final evaluation of run {run_name}")
     metrics = evaluate(root_cell=root_cell, data_handlers=data_handlers, config=config, paths=paths, loss_fn=F.cross_entropy)
     print_metrics(metrics)
 
     ### generate summary plot
-    fig, axes = get_summary_plots(metrics, with_baselines=True)
-    plt.savefig(os.path.join(LOGS_DIR, f"summary_{tm}.png"))
+    fig, axes = get_summary_plots(metrics, with_baselines=False)
+    plt.savefig(os.path.join(path_to_run_dir, f"summary_plot.png"))
     plt.show()
     if wandb_run is not None:
         wandb_run.log({"summary": wandb.Image(fig)})

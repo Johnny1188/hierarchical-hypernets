@@ -1,37 +1,42 @@
+import os
 import torch
 from copy import deepcopy
 
-from utils.configs import finish_arch_config
+from utils.configs import finish_arch_config, get_cell_config
 from configs.data_specs import get_data_specs
 from configs.solver_specs import get_solver_specs
 
 
 def get_arch_config(config):
-    cell_config = {"hnet": config["hnet"], "solver": config["solver"], "device": config["device"]}
-    get_c = lambda: deepcopy(cell_config)
-
     ### ability to have more root cells
     arch_config = [
         {
-            **get_c(),
+            **get_cell_config(config),
             "children": []
         }
     ]
 
-    final_arch_config = [finish_arch_config(root_cell, root_level=True) for root_cell in arch_config]
+    final_arch_config = [finish_arch_config(root_cell, root_level=True)[0] for root_cell in arch_config]
     return final_arch_config
 
 
 def get_config(cli_args=None):
     config = {
-        "epochs": 50,
+        "epochs": 80,
+        "use_early_stopping": True,
+        "early_stopping": {
+            "patience": 8,
+            "min_delta": 0.001,
+        },
         "data": {
             # **get_data_specs("mnist|fmnist"),
             # **get_data_specs("splitmnist"),
-            **get_data_specs("splitcifar10"),
+            # **get_data_specs("splitcifar10"),
             # **get_data_specs("splitcifar100"),
-            "batch_size": 32,
-            "data_dir": "data",
+            # **get_data_specs("splitmnist,splitcifar100"),
+            **get_data_specs("permutedmnist,splitcifar100,splitmnist", n_permuations=25),
+            "batch_size": 256,
+            "data_dir": "data" if os.environ.get("DATA_PATH") is None else os.path.join(os.environ.get("DATA_PATH"), "cl"),
             "validation_size": 0,
         },
         "solver": {
@@ -39,20 +44,19 @@ def get_config(cli_args=None):
             # "specs": get_solver_specs("lenet", in_shape=[32, 32, 3], num_outputs=10),
 
             "use": "zenkenet",
-            "specs": get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=10),
+            "specs": get_solver_specs("zenkenet", in_shape=[32, 32, 3], num_outputs=5*2 + 6*10 + 25*10),
 
             # "use": "resnet",
             # "specs": get_solver_specs("resnet", in_shape=[32, 32, 3], num_outputs=10),
 
-            "task_heads": None,
-            # "task_heads": [(0,10), (10, 20), (20, 30), (30, 40), (40, 50), (50, 60)],
+            "task_heads": None, # specified later
         },
         "hnet": {
             "model": {
-                "layers": [25, 25],
+                "layers": [100,150,200],
                 "dropout_rate": -1, # hmlp doesn't get images -> need to be added to resnet
                 "chunk_emb_size": 80,
-                "chunk_size": 30_000,
+                "chunk_size": 5500,
                 "num_cond_embs": None, # specified later
                 "cond_in_size": 48,
                 "cond_chunk_embs": False,
@@ -60,9 +64,10 @@ def get_config(cli_args=None):
                 "root_no_cond_weights": False,
                 "children_no_uncond_weights": True,
                 "children_no_cond_weights": False,
+                "act_func": torch.nn.ReLU(), # dying relu
             },
-            "lr": 0.0005,
-            "reg_lr": 0.0005,
+            "lr": 0.0001,
+            "reg_lr": 0.0001,
             "reg_alpha": 0, # L2 regularization of solvers' parameters
             "reg_beta": 0.01, # regularization against forgetting other contexts (tasks)
             "adam_beta_1": 0.5,
@@ -99,6 +104,7 @@ def get_config(cli_args=None):
             raise NotImplementedError
 
     config["solver"]["in_shape"] = config["data"]["in_shape"]
-    config["hnet"]["model"]["num_cond_embs"] = config["data"]["num_tasks"] * 2
+    config["solver"]["task_heads"] = config["data"]["task_separation_idxs"]
+    config["solver"]["num_classes"] =config["solver"]["task_heads"][-1][-1] + 1
 
     return config

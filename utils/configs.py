@@ -9,6 +9,16 @@ from copy import deepcopy
 import time
 
 
+def get_cell_config(global_config):
+    cell_config = {
+        "hnet": global_config["hnet"],
+        "solver": global_config["solver"],
+        "device": global_config["device"],
+        "num_tasks": global_config["data"]["num_tasks"]
+    }
+    return deepcopy(cell_config)
+
+
 def finish_arch_config(cell, root_level=False):
     cell["is_root"] = root_level
     cell["hnet"]["model"]["no_uncond_weights"] = not root_level # only root cells maintain
