@@ -18,7 +18,7 @@ from utils.data import get_mnist_data_loaders, get_emnist_data_loaders, randomiz
 from utils.visualization import show_imgs, get_model_dot
 from utils.others import measure_alloc_mem, count_parameters
 from utils.timing import func_timer
-from utils.metrics import get_accuracy, calc_accuracy
+from utils.metrics import get_accuracy
 
 torch.set_printoptions(precision=3, linewidth=180)
 
@@ -67,15 +67,17 @@ def calc_delta_theta(hnet, lr, detach=False):
     return ret
 
 
-def get_reg_loss_for_cond(hnet, hnet_prev_params, reg_cond_id, lr, detach_d_theta=True):
+def get_reg_loss_for_cond(hnet, hnet_prev_params, theta_target, reg_cond_id, lr=1e-4, detach_d_theta=True):
     # prepare targets (theta for child nets predicted by previous hnet)
-    hnet_mode = hnet.training
-    hnet.eval()
-    with torch.no_grad():
-        theta_target = hnet(cond_id=reg_cond_id, weights=hnet_prev_params if hnet_prev_params is not None else None)
+    if theta_target is None:
+        hnet_mode = hnet.training
+        hnet.eval()
+        with torch.no_grad():
+            theta_target = hnet(cond_id=reg_cond_id, weights=hnet_prev_params if hnet_prev_params is not None else None)
+        hnet.train(mode=hnet_mode)
+    
     # detaching target below is important!
     theta_target = torch.cat([p.detach().clone().view(-1) for p in theta_target])
-    hnet.train(mode=hnet_mode)
     
     # TODO: could this work even if we don't add this d_theta? (we wouldn't need to perform backward pass twice)
     d_theta = calc_delta_theta(hnet, lr, detach=detach_d_theta)
@@ -91,7 +93,7 @@ def get_reg_loss_for_cond(hnet, hnet_prev_params, reg_cond_id, lr, detach_d_thet
     return (theta_target - theta_predicted).pow(2).sum()
 
 
-def get_reg_loss(hnet, hnet_prev_params, reg_cond_ids, lr=1e-3, detach_d_theta=True, device="cpu"):
+def get_reg_loss(hnet, hnet_prev_params, theta_targets, reg_cond_ids, lr=1e-4, detach_d_theta=True, device="cpu"):
     """
     Regularizing the hnet to predict the same theta for the same context
     (regularization against forgetting)
@@ -99,7 +101,14 @@ def get_reg_loss(hnet, hnet_prev_params, reg_cond_ids, lr=1e-3, detach_d_theta=T
     reg_loss = torch.tensor(0., device=device)
     # num_regs = curr_cond_id if reg_only_until_curr_cond_id is True else hnet._num_cond_embs
     for reg_cond_id in reg_cond_ids:
-        reg_loss += get_reg_loss_for_cond(hnet=hnet, hnet_prev_params=hnet_prev_params, reg_cond_id=reg_cond_id, lr=lr, detach_d_theta=detach_d_theta)
+        reg_loss += get_reg_loss_for_cond(
+            hnet=hnet,
+            hnet_prev_params=hnet_prev_params,
+            theta_target=theta_targets[reg_cond_id] if theta_targets is not None else None,
+            reg_cond_id=reg_cond_id,
+            lr=lr,
+            detach_d_theta=detach_d_theta
+        )
     return reg_loss / max(1, len(reg_cond_ids))
 
 

@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import time
+from configs.solver_specs import get_solver_specs
 
 
 def get_cell_config(global_config):
@@ -17,6 +18,31 @@ def get_cell_config(global_config):
         "num_tasks": global_config["data"]["num_tasks"]
     }
     return deepcopy(cell_config)
+
+
+def finish_config_from_data(config, data_handlers):
+    assert len(data_handlers) > 0
+    config["solver"]["task_heads"] = []
+    start_idx = 0
+    for context in data_handlers.values():
+        for tasks in context.values():
+            for task in tasks:
+                config["solver"]["task_heads"].append((start_idx, start_idx + len(task["classes_in_experience"])))
+                start_idx += len(task["classes_in_experience"])
+            # config["solver"]["task_heads"].extend(get_task_separation_idxs(
+            #     n_tasks=b["num_tasks"],
+            #     n_classes_per_task=b["num_classes_per_task"],
+            #     start_idx=start_idx
+            # ))
+            # start_idx = start_idx + b["num_tasks"] * b["num_classes_per_task"]
+    in_shape = None
+    for benchmark in [*config["data"]["benchmark_specs_seen_before"], *config["data"]["benchmark_specs_seen_now"]]:
+        if in_shape is None:
+            in_shape = benchmark["in_shape"]
+        else:
+            assert in_shape == benchmark["in_shape"], "All benchmarks must have the same input shape"
+    config["solver"]["specs"] = get_solver_specs("zenkenet", in_shape=in_shape, num_outputs=config["solver"]["task_heads"][-1][-1])
+    return config
 
 
 def finish_arch_config(cell, root_level=False):
@@ -31,3 +57,7 @@ def finish_arch_config(cell, root_level=False):
 
     cell["hnet"]["model"]["num_cond_embs"] = (n_cells_visited_below + 1) * cell["num_tasks"] # +1 for the cell itself
     return cell, n_cells_visited_below + 1
+
+def get_task_separation_idxs(n_tasks, n_classes_per_task, start_idx=0):
+    sep_idxs = list(range(start_idx, start_idx + n_tasks * n_classes_per_task + 1, n_classes_per_task))
+    return [(s, e) for s, e in zip(sep_idxs[:-1], sep_idxs[1:])]

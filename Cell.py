@@ -18,6 +18,7 @@ class Cell(nn.Module):
         self.device = device
         self.hnet_theta_optim = None
         self.task_emb_optims = None
+        self.starting_cond_id = 0
         self.cond_id_mapping = None
         self.saved_solver_acts = [] # debugging
         self._init_params()
@@ -27,7 +28,16 @@ class Cell(nn.Module):
             self.reinit_cond_embs_optims()
 
     def save_tree(self, curr_path, dict_to_save, path_to_checkpoint_file, is_root=True):
-        dict_to_save[f"{''.join([str(s) for s in curr_path])}_state_dict"] = self.state_dict()
+        # dict_to_save[f"{''.join([str(s) for s in curr_path])}_state_dict"] = self.state_dict()
+        cond_params_to_save = []
+        for cond_id in range(self.hnet.num_known_conds):
+            cond_params_to_save.append({"cond_emb": self.hnet.conditional_params[cond_id].detach()})
+            if self.hnet.cond_chunk_embs is True: # chunk embeddings may also be conditional
+                cond_params_to_save[-1]["cond_chunk_emb"] = self.hnet.get_chunk_emb(cond_id=cond_id).detach()
+        dict_to_save[f"{''.join([str(s) for s in curr_path])}_cond_params"] = cond_params_to_save
+        dict_to_save[f"{''.join([str(s) for s in curr_path])}_uncond_params"] = [p.detach() for p in self.hnet.unconditional_params]
+
+        # dict_to_save[f"{''.join([str(s) for s in curr_path])}_param_shapes_meta"] = self.hnet.conditional_params
         dict_to_save[f"{''.join([str(s) for s in curr_path])}_additionals"] = self.dump_cell_additionals()
 
         for c_idx, child_cell in enumerate(self.children):
@@ -41,9 +51,30 @@ class Cell(nn.Module):
             check_dict = torch.load(path_to_checkpoint_file)
 
         path_key = ''.join([str(s) for s in curr_path])
-        self.load_state_dict(check_dict[f"{path_key}_state_dict"])
+
+        with torch.no_grad():
+            # load conditional parameters for already seen contexts (contexts == experiences) - assuming they are in the same order
+            n_saved_cond_params = len(check_dict[f"{path_key}_cond_params"])
+            for cond_id in range(n_saved_cond_params):
+                self.hnet.conditional_params[cond_id] = check_dict[f"{path_key}_cond_params"][cond_id]["cond_emb"]
+                if self.hnet.cond_chunk_embs is True: # chunk embeddings are also conditional -> load them
+                    cond_chunk_emb_to_set = check_dict[f"{path_key}_cond_params"][cond_id]["cond_chunk_emb"]
+                    # note: loaded chunk emb might have different shape than the current one due to different num of output neurons in the target network (=> different num of chunks)
+                    self.hnet.conditional_params[-self.hnet._num_cond_embs + cond_id][:cond_chunk_emb_to_set.shape[0], :cond_chunk_emb_to_set.shape[1]] = cond_chunk_emb_to_set
+
+            # load unconditional parameters (must be the same sizes as the current ones)
+            assert self.hnet.unconditional_param_shapes == [list(p.shape) for p in check_dict[f"{path_key}_uncond_params"]], \
+                f"Unconditional param shapes do not match. Expected {self.hnet.unconditional_param_shapes}, got {check_dict[f'{path_key}_uncond_params']}"
+            for loaded_i, unconditional_idx in enumerate(self.hnet.unconditional_params_ref):
+                self.hnet.internal_params[unconditional_idx] = check_dict[f"{path_key}_uncond_params"][loaded_i]
+
+        # self.load_state_dict(check_dict[f"{path_key}_state_dict"])
+        # del check_dict[f"{path_key}_state_dict"]
         self.load_additionals(check_dict[f"{path_key}_additionals"])
-        del check_dict[f"{path_key}_state_dict"]
+
+        # delete from the checkpoint
+        del check_dict[f"{path_key}_cond_params"]
+        del check_dict[f"{path_key}_uncond_params"]
         del check_dict[f"{path_key}_additionals"]
 
         for c_idx, child_cell in enumerate(self.children):
@@ -61,26 +92,48 @@ class Cell(nn.Module):
         return c_adds
 
     def load_additionals(self, cell_additionals):
-        self.num_tasks = cell_additionals["num_tasks"]
-        self.needs_theta_type = cell_additionals["needs_theta_type"]
-        self.config = cell_additionals["config"]
-        self.device = cell_additionals["device"]
-        self.cond_id_mapping = cell_additionals["cond_id_mapping"]
+        # self.num_tasks = cell_additionals["num_tasks"]
+        # self.needs_theta_type = cell_additionals["needs_theta_type"]
+        # self.config = cell_additionals["config"]
+        # self.device = cell_additionals["device"]
+        for path, contexts in cell_additionals["cond_id_mapping"].items():
+            for context_name, task_idxs in contexts.items():
+                if tuple(path) not in self.cond_id_mapping.keys():
+                    self.cond_id_mapping[tuple(path)] = dict()
+                elif context_name in self.cond_id_mapping[tuple(path)]:
+                    print(f"[WARNING] Context {context_name} already exists in the cell. Overwriting.")
+                
+                # append/initialize task idxs
+                assert self.cond_id_mapping[tuple(path)][context_name] == task_idxs, \
+                    f"Task idxs for past context {context_name} do not match. Expected {self.cond_id_mapping[tuple(path)][context_name]}, got {task_idxs}"
+                # self.cond_id_mapping[tuple(path)][context_name] = task_idxs
+        # self.cond_id_mapping = cell_additionals["cond_id_mapping"]
         return self
 
-    def init_cond_id_mapping(self, init_children=True):
-        if init_children is True:
-            for child in self.children:
-                child.init_cond_id_mapping(init_children=True)
+    def init_cond_id_mapping(self, contexts, init_children=False):
+        """
+        :param contexts: list of contexts - dictionaries with keys: "name", "num_tasks"
+        """
+        assert init_children is False, "init_children is not supported yet."
+        # if init_children is True:
+        #     for child in self.children:
+        #         child.init_cond_id_mapping(init_children=True)
         
         av_paths = self.get_available_paths([], [])
         self.cond_id_mapping = {}
 
-        starting_cond_id = 0
         for path in av_paths:
-            last_child_n_tasks = self.get_child_at_path(path).num_tasks
-            self.cond_id_mapping[tuple(path)] = list(range(starting_cond_id, starting_cond_id + last_child_n_tasks))
-            starting_cond_id += last_child_n_tasks
+            # last_child_n_tasks = self.get_child_at_path(path).num_tasks
+            self.cond_id_mapping[tuple(path)] = dict()
+            for context in contexts:
+                # increasing task idxs across the whole "life" of the cell
+                self.cond_id_mapping[tuple(path)][context["name"]] = \
+                    list(range(self.starting_cond_id, self.starting_cond_id + context["num_tasks"]))
+                self.starting_cond_id += context["num_tasks"]
+                
+                # tasks idxs separate for each context
+                # self.cond_id_mapping[tuple(path)][context["name"]] = \
+                #     list(range(context["num_tasks"]))
 
     def get_child_at_path(self, path):
         if len(path) == 0:
@@ -103,13 +156,13 @@ class Cell(nn.Module):
         for child in self.children:
             child.reinit_uncond_params_optim()
     
-    def reinit_cond_embs_optims(self, path=[], task_i=None, reinit_all_children=False):
+    def reinit_cond_embs_optims(self, path=[], context_name=None, task_i=None, reinit_all_children=False):
         if self.hnet.conditional_params is None: # no conditional params
             self.task_emb_optims = None
         else:
             if task_i is not None and self.task_emb_optims is not None:
                 ### reinitialize only a single path---task/context embedding optimizer
-                cond_id = self.get_cond_id(task_i, path)
+                cond_id = self.get_cond_id(context_name, task_i, path)
                 params = [self.hnet.conditional_params[cond_id]]
                 if self.hnet.cond_chunk_embs is True: # chunk embeddings may also be conditional
                     params.append(self.hnet.get_chunk_emb(cond_id=cond_id))
@@ -144,10 +197,10 @@ class Cell(nn.Module):
         elif len(path) > 0:
             self.children[path[0]].reinit_cond_embs_optims(path=path[1:], task_i=task_i, reinit_all_children=reinit_all_children)
 
-    def forward(self, x, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}, save_last_fc_acts=False):
+    def forward(self, x, context_name, task_i, path, theta_hnet=None, path_trace={"cond_ids": []}, save_last_fc_acts=False):
         assert type(path) == list, "path must be a list of integers"
         
-        cond_id = self.get_cond_id(task_i, path)
+        cond_id = self.get_cond_id(context_name, task_i, path)
         
         if len(path) == 0: # hnet -> solver
             ### hypernet -> solver
@@ -160,7 +213,7 @@ class Cell(nn.Module):
                 y_hat, self.saved_solver_acts = out, []
 
             ### get task head indices
-            task_head_idxs = self.get_task_head_idxs(task_i)
+            task_head_idxs = self.get_task_head_idxs(cond_id)
             y_hat = y_hat[:, task_head_idxs[0]:task_head_idxs[1]]
 
             ### save path trace to this cell
@@ -198,15 +251,15 @@ class Cell(nn.Module):
             raise RuntimeError("Child cell doesn't have a valid needs_theta_type property")
         return theta_child_hnet
 
-    def get_task_head_idxs(self, task_i):
+    def get_task_head_idxs(self, cond_id):
         """ Get solver's head indices for a given task """
         if "task_heads" not in self.config["solver"] or self.config["solver"]["task_heads"] is None:
             return [0, self.solver.num_classes]
         
-        return [self.config["solver"]["task_heads"][task_i][0], self.config["solver"]["task_heads"][task_i][1]]
+        return [self.config["solver"]["task_heads"][cond_id][0], self.config["solver"]["task_heads"][cond_id][1]]
 
-    def get_cond_id(self, task_i, path):
-        return self.cond_id_mapping[tuple(path)][task_i]
+    def get_cond_id(self, context_name, task_i, path):
+        return self.cond_id_mapping[tuple(path)][context_name][task_i]
 
     def toggle_mode(self, mode):
         assert mode in ("train", "eval"), "Unknown mode (only 'train' and 'eval')."
@@ -227,16 +280,16 @@ class Cell(nn.Module):
         for child in self.children:
             child.zero_grad()
     
-    def step(self, path, task_i=None):
+    def step(self, path, context_name, task_i=None, skip_my_hnet_theta=False):
         assert type(path) == list, "path must be a list of integers"
 
         ### step hnet's unconditional parameters (theta - everything except task embeddings)
-        if self.hnet_theta_optim is not None:
+        if skip_my_hnet_theta is False and self.hnet_theta_optim is not None:
             self.hnet_theta_optim.step()
             
         if self.task_emb_optims is not None:
             if task_i is not None: # step only a single task embedding optimizer
-                self.task_emb_optims[self.get_cond_id(task_i, path)].step()
+                self.task_emb_optims[self.get_cond_id(context_name, task_i, path)].step()
             else: # step with all task embedding optimizers
                 for task_emb_optim in self.task_emb_optims:
                     task_emb_optim.step()

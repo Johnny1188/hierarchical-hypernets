@@ -13,7 +13,7 @@ from utils.data import get_mnist_data_loaders, get_emnist_data_loaders, randomiz
 from utils.visualization import show_imgs, get_model_dot
 from utils.others import measure_alloc_mem, count_parameters
 from utils.timing import func_timer
-from utils.metrics import get_accuracy, calc_accuracy
+from utils.metrics import get_accuracy
 from utils.hypnettorch_utils import correct_param_shapes, calc_delta_theta, get_reg_loss_for_cond, get_reg_loss, \
     infer, print_stats, print_metrics, clip_grads, take_training_step, init_hnet_unconditionals, remove_hnet_uncondtionals, \
     validate_cells_training_inputs, train_cells
@@ -26,7 +26,10 @@ def init_arch(arch_config, config):
     root_cells = []
     for root_cell_config in arch_config:
         root_cell = create_tree(root_cell_config, config)
-        root_cell.init_cond_id_mapping(init_children=True)
+        root_cell.init_cond_id_mapping(
+            contexts=[*config["data"]["benchmark_specs_seen_before"], *config["data"]["benchmark_specs_seen_now"]],
+            init_children=False, # TODO: children not initialized
+        )
         root_cells.append(root_cell)
 
     return root_cells
@@ -99,42 +102,6 @@ def create_tree(cell_config, config):
     )
 
     return cell
-
-
-def get_hnets(config, target_nets_shapes):
-    torch.manual_seed(0)
-    np.random.seed(0)
-
-    assert "num_cells" in config.keys() and config["num_cells"] == len(target_nets_shapes), \
-        "Number of cells must be equal to number of target nets' parameter shapes"
-
-    # create hypernetworks
-    hnets = []
-    for c_i, hnet_out_shape in enumerate(reversed(target_nets_shapes)):
-        if hnet_out_shape == -1: # generate params for the previously created hypernetwork (child hypernet)
-            if config["hnet"]["model"]["children_no_uncond_weights"] is True and config["hnet"]["model"]["children_no_cond_weights"] is True:
-                hnet_out_shape = hnets[0].param_shapes
-            elif config["hnet"]["model"]["children_no_uncond_weights"] is True and config["hnet"]["model"]["children_no_cond_weights"] is False:
-                hnet_out_shape = hnets[0].unconditional_param_shapes
-            elif config["hnet"]["model"]["children_no_uncond_weights"] is False and config["hnet"]["model"]["children_no_cond_weights"] is True:
-                hnet_out_shape = hnets[0].conditional_param_shapes
-            else:
-                raise ValueError(f"hnet_out_shape is -1 (== get param shapes of previous hypernet) but children_no_uncond_weights and children_no_cond_weights are False")
-
-        hnets.insert(0, ChunkedHMLP(
-                hnet_out_shape,
-                layers=config["hnet"]["model"]["layers"],
-                chunk_size=config["hnet"]["model"]["chunk_size"],
-                chunk_emb_size=config["hnet"]["model"]["chunk_emb_size"],
-                cond_chunk_embs=config["hnet"]["model"]["cond_chunk_embs"],
-                cond_in_size=config["hnet"]["model"]["cond_in_size"],
-                num_cond_embs=config["hnet"]["model"]["num_cond_embs"],
-                no_uncond_weights=config["hnet"]["model"]["root_no_uncond_weights"] if c_i == config["num_cells"] - 1 else config["hnet"]["model"]["children_no_uncond_weights"],
-                no_cond_weights=config["hnet"]["model"]["root_no_cond_weights"] if c_i == config["num_cells"] - 1 else config["hnet"]["model"]["children_no_cond_weights"],
-            ).to(config["device"])
-        )
-        # hnet_root.apply_chunked_hyperfan_init(mnet=hnet_child)
-    return hnets
 
 
 def get_target_nets(num_solvers, solver_name, solver_specs, device="cpu"):
