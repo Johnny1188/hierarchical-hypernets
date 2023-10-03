@@ -15,7 +15,7 @@ In this **exploratory project**, I investigated the viability of **Hierarchical 
 The idea was to extend the work [Continual learning with hypernetworks (Johannes von Oswald et.al. 2019)](https://arxiv.org/abs/1906.00695) by **adding recursion to the hypernetworks architecture**. That is, the previous work conditioned the hypernetwork with a task id such that it predicted the right parameters for the target (*solver*) network (CNN). The intuition why this might be less prone to catastrophic forgetting is that a single neural network that is trained in a continual learning fashion on sequence of tasks needs to remember all the image->label mappings of all the tasks while the hypernetwork needs to remember only as many mappings as there are tasks (task id -> target/solver network parameters).
 
 In this project, I wanted to extend this idea by making the hypernetwork itself a target network for another hypernetwork. This way, the hypernetworks would be able to generate themselves recursively, and hence grow in capacity while keeping the same number of parameters. The architecture is illustrated in the figure below. Since the figure is from a research proposal I wrote for this project, there are a lot of additional details - the important thing is that green boxes are hypernetworks and blue boxes are the target (*solver*) networks (CNNs). As new tasks arrive, new hypernetworks are added to the path from the root hypernetwork $H_0$ to the target networks $f_i$. 
-<img src="artifacts/hh_arch.png" alt="hierarchical hypernetworks architecture" width="100%"/>
+<img src="other/hh_arch.png" alt="hierarchical hypernetworks architecture" width="100%"/>
 
 
 ## Results
@@ -24,7 +24,7 @@ Although I have tried multiple approaches of hypernetwork recursion (not only th
 - the middle plot shows the accuracy of the target network at the path **root hypernetwork -> hypernetwork -> target (solver) network**;
 - the rightmost plot shows the accuracy of the target network at the path **root hypernetwork -> hypernetwork -> hypernetwork -> target (solver) network**.
 
-<img src="artifacts/hh_results.png" alt="hierarchical hypernetworks results" width="100%"/>
+<img src="other/hh_results.png" alt="hierarchical hypernetworks results" width="100%"/>
 
 As one can see, the performance of the target network drops significantly as the chain of hypernetworks gets longer. Furthermore, this high sensitivity on hypernetwork parameter prediction errors causes the training to be unstable and the accuracy to fluctuate a lot.
 
