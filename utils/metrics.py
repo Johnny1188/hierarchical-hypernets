@@ -6,10 +6,8 @@ def get_params_info(cell, path, n_maintained_params, n_solver_params):
     name = "[" + "".join([str(i) for i in path]) + "]"
     n_maintained_hnet = cell.hnet.num_internal_params
     n_maintained_solver = cell.solver.num_internal_params
-    # num_maintained = sum(p.numel() for p in cell.parameters())
     max_maintained_hnet = cell.hnet.num_params
     max_maintained_solver = cell.solver.num_params
-    # max_maintained = sum([np.prod(p) for p in [*cell.hnet.param_shapes, *cell.solver.param_shapes]])
 
     print(f"- {name} hypernet:\t{n_maintained_hnet}\t({max_maintained_hnet} possible)")
     print(f"- {name} solver: \t{n_maintained_solver}\t({max_maintained_solver} possible)")
@@ -35,10 +33,6 @@ def get_metrics_path_key(path_idx, path):
     m_key_p = f"[P{path_idx + 1}-{''.join([str(i) for i in path])}]"
     return m_key_p
 
-
-# def get_metrics_task_key(context_idx, task_idx):
-#     m_key_t = f"[C{context_idx + 1}][T{task_idx + 1}]"
-#     return m_key_t
 
 def get_metrics_task_key(task_idx):
     m_key_t = f"[T{task_idx + 1}]"

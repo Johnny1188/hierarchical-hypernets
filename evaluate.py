@@ -26,8 +26,6 @@ def eval_task(root_cell, task_i, task, context_name, config, path, loss_fn=F.cro
         X = X.to(config["device"])
         _, y = torch.unique(y, return_inverse=True)
         y = y.to(config["device"])
-        # X = task_data.input_to_torch_tensor(X, config["device"], mode="inference")
-        # y = task_data.output_to_torch_tensor(y, config["device"], mode="inference")
 
         # generate theta and predict # TODO: not necessary to run the hypernetwork for each batch
         y_hat, theta_solver, path_trace = root_cell(X, context_name=context_name, task_i=task_i, path=path, theta_hnet=None, path_trace={"cond_ids": []})
